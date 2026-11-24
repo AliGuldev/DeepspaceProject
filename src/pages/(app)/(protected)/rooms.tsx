@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { DoorClosed, DoorOpen, Inbox, Pencil, Plus } from 'lucide-react'
+import { DoorClosed, DoorOpen, Inbox, Pencil, Plus, Trash2 } from 'lucide-react'
 import { ROLES, useMutations, useQuery, useUser, type Role } from 'deepspace'
 import { Link, Outlet, useParams } from 'react-router-dom'
 import {
   Badge,
   Button,
+  ConfirmModal,
   EmptyState,
   Input,
   Label,
@@ -112,11 +113,21 @@ interface RoomCardProps {
   room: RoomRecord
   isOwner: boolean
   isUpdating: boolean
+  isDeleting: boolean
   onEdit: () => void
   onClose: () => void
+  onDelete: () => void
 }
 
-function RoomCard({ room, isOwner, isUpdating, onEdit, onClose }: RoomCardProps) {
+function RoomCard({
+  room,
+  isOwner,
+  isUpdating,
+  isDeleting,
+  onEdit,
+  onClose,
+  onDelete,
+}: RoomCardProps) {
   const isClosed = room.data.status === ROOM_STATUS.CLOSED
 
   return (
@@ -152,7 +163,7 @@ function RoomCard({ room, isOwner, isUpdating, onEdit, onClose }: RoomCardProps)
               size="icon"
               className="size-8 text-muted-foreground"
               onClick={onEdit}
-              disabled={isUpdating}
+              disabled={isUpdating || isDeleting}
               aria-label={`Edit ${room.data.title}`}
             >
               <Pencil aria-hidden="true" />
@@ -163,12 +174,24 @@ function RoomCard({ room, isOwner, isUpdating, onEdit, onClose }: RoomCardProps)
                 size="icon"
                 className="size-8 text-muted-foreground"
                 onClick={onClose}
-                loading={isUpdating}
+                loading={isUpdating && !isDeleting}
+                disabled={isDeleting}
                 aria-label={`Close ${room.data.title}`}
               >
                 {!isUpdating && <DoorClosed aria-hidden="true" />}
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
+              onClick={onDelete}
+              disabled={isUpdating || isDeleting}
+              loading={isDeleting}
+              aria-label={`Delete ${room.data.title}`}
+            >
+              {!isDeleting && <Trash2 aria-hidden="true" />}
+            </Button>
           </div>
         )}
       </div>
@@ -190,12 +213,14 @@ export default function RoomsPage({ className }: RoomsPageProps) {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editTarget, setEditTarget] = useState<RoomRecord | null>(null)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<RoomRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const { records: rooms, status } = useQuery<Room>('rooms', {
     orderBy: 'createdAt',
     orderDir: 'desc',
   })
-  const { createConfirmed, putConfirmed } = useMutations<Room>('rooms')
+  const { createConfirmed, putConfirmed, removeConfirmed } = useMutations<Room>('rooms')
 
   const { myRooms, otherRooms } = useMemo(() => {
     const mine: typeof rooms = []
@@ -259,6 +284,24 @@ export default function RoomsPage({ className }: RoomsPageProps) {
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget || deleting) return
+
+    setDeleting(true)
+    try {
+      await removeConfirmed(deleteTarget.recordId)
+      toast.success('Room deleted', `"${deleteTarget.data.title}" was deleted.`)
+      setDeleteTarget(null)
+    } catch (error) {
+      toast.error(
+        'Could not delete room',
+        error instanceof Error ? error.message : 'Please try again.',
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const isLoading = status === 'loading'
 
   if (nestedRoomId) return <Outlet />
@@ -315,8 +358,10 @@ export default function RoomsPage({ className }: RoomsPageProps) {
                       room={room}
                       isOwner
                       isUpdating={updatingId === room.recordId}
+                      isDeleting={deleting && deleteTarget?.recordId === room.recordId}
                       onEdit={() => setEditTarget(room)}
                       onClose={() => void handleClose(room)}
+                      onDelete={() => setDeleteTarget(room)}
                     />
                   ))}
                 </div>
@@ -333,8 +378,10 @@ export default function RoomsPage({ className }: RoomsPageProps) {
                       room={room}
                       isOwner={false}
                       isUpdating={false}
+                      isDeleting={false}
                       onEdit={() => undefined}
                       onClose={() => undefined}
+                      onDelete={() => undefined}
                     />
                   ))}
                 </div>
@@ -353,6 +400,18 @@ export default function RoomsPage({ className }: RoomsPageProps) {
           setEditTarget(null)
         }}
         onSave={(title, description) => handleSave(editTarget, title, description)}
+      />
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        onClose={() => {
+          if (!deleting) setDeleteTarget(null)
+        }}
+        onConfirm={() => void handleDelete()}
+        title={deleteTarget ? `Delete "${deleteTarget.data.title}"?` : 'Delete room?'}
+        description="This cannot be undone."
+        confirmText="Delete"
+        loading={deleting}
       />
     </div>
   )
