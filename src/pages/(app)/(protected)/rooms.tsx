@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { DoorClosed, DoorOpen, Inbox, Pencil, Plus } from 'lucide-react'
 import { ROLES, useMutations, useQuery, useUser, type Role } from 'deepspace'
-import { Link } from 'react-router-dom'
+import { Link, Outlet, useParams } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -181,6 +181,7 @@ interface RoomsPageProps {
 }
 
 export default function RoomsPage({ className }: RoomsPageProps) {
+  const { roomId: nestedRoomId } = useParams()
   const { user } = useUser()
   const userRole = (user?.role ?? ROLES.VIEWER) as Role
   const canCreate = userRole === ROLES.MEMBER || userRole === ROLES.ADMIN
@@ -259,6 +260,8 @@ export default function RoomsPage({ className }: RoomsPageProps) {
   }
 
   const isLoading = status === 'loading'
+
+  if (nestedRoomId) return <Outlet />
 
   return (
     <div className={`h-full overflow-y-auto bg-background ${className ?? ''}`}>
