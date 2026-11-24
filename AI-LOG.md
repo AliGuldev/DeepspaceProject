@@ -20,3 +20,20 @@ code AI-LOG.md
 - **Copilot did:** `rooms-schema.ts`, `rooms.tsx`, registered the schema in `schemas.ts`, added nav in `nav.ts`.
 - **I verified:** Created a room and saw it in the list. [Add the second-user test result here.]
 - **I changed:** I removed the "don't touch other files" limit from the prompt, since registration and nav needed edits.
+
+## 5. Copilot instructions file
+- **Asked:** Claude chat for what to put in `.github/copilot-instructions.md`.
+- **Decision:** Told Copilot to use DeepSpace primitives instead of writing its own, 
+  to read the docs before using integrations, and to always pass 
+  `claude-haiku-5-5` (the integration defaults to the expensive Opus model).
+- **Why:** Copilot doesn't know DeepSpace, so it needs rules up front.
+
+## 6. Docs correction
+- **Problem:** The AI guessed a docs URL (`guides/integrations.md`) that doesn't exist.
+- **Fix:** Fetched the docs index and found the real page, 
+  `sdk-reference/client/integrations`. Updated the Copilot instructions.
+
+## 7. Scope decision
+- **Decision:** Core loop first (rooms, options, votes, AI summary), then 
+  nearby places, forecast, and email, dropping from the bottom if time runs out.
+- **Why:** Limited hours, and a finished core beats more half-working features.

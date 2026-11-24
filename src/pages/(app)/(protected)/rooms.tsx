@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { DoorClosed, DoorOpen, Inbox, Pencil, Plus } from 'lucide-react'
 import { ROLES, useMutations, useQuery, useUser, type Role } from 'deepspace'
+import { Link } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -127,7 +128,11 @@ function RoomCard({ room, isOwner, isUpdating, onEdit, onClose }: RoomCardProps)
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">
-            <h3 className="font-medium text-foreground">{room.data.title}</h3>
+            <h3 className="font-medium text-foreground">
+              <Link to={`/rooms/${encodeURIComponent(room.recordId)}`} className="hover:underline">
+                {room.data.title}
+              </Link>
+            </h3>
             <Badge variant={isClosed ? 'secondary' : 'success'} size="sm">
               {isClosed ? 'Closed' : 'Open'}
             </Badge>
