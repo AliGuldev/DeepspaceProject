@@ -1,15 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   ActionResult,
   ActionTools,
   GetActionData,
   QueryActionData,
 } from 'deepspace/worker'
-import { actions } from './index'
+import { actions, chooseWinningDate } from './index'
 
 interface Fixture {
   members: string[]
-  dates: Array<{ recordId: string; addedBy: string }>
+  dates: Array<{ recordId: string; addedBy: string; title?: string }>
+  locations?: Array<{ recordId: string; addedBy: string; title: string }>
   votes: Array<{ recordId: string; optionId: string; userId: string; value: number }>
 }
 
@@ -27,16 +28,28 @@ function makeTools(fixture: Fixture) {
   const created: Array<{ collection: string; data: Record<string, unknown> }> = []
   const records: Record<string, ReturnType<typeof envelope>[]> = {
     users: fixture.members.map((id) => envelope(id, { name: id })),
-    options: fixture.dates.map(({ recordId, addedBy }) =>
-      envelope(recordId, {
-        roomId: 'room',
-        kind: 'date',
-        title: '2026-12-01',
-        pros: [],
-        cons: [],
-        addedBy,
-      }),
-    ),
+    options: [
+      ...fixture.dates.map(({ recordId, addedBy, title }) =>
+        envelope(recordId, {
+          roomId: 'room',
+          kind: 'date',
+          title: title ?? '2026-12-01',
+          pros: [],
+          cons: [],
+          addedBy,
+        }),
+      ),
+      ...(fixture.locations ?? []).map(({ recordId, addedBy, title }) =>
+        envelope(recordId, {
+          roomId: 'room',
+          kind: 'location',
+          title,
+          pros: [],
+          cons: [],
+          addedBy,
+        }),
+      ),
+    ],
     votes: fixture.votes.map(({ recordId, optionId, userId, value }) =>
       envelope(recordId, { roomId: 'room', optionId, userId, value }),
     ),
@@ -124,12 +137,151 @@ function context(
     userId: 'u1',
     params,
     tools,
-    env: {} as Parameters<typeof actions.addRoomLocation>[0]['env'],
+    env: { GEOAPIFY_API_KEY: 'test-api-key' } as Parameters<typeof actions.addRoomLocation>[0]['env'],
     callerJwt: 'test-token',
   }
 }
 
 describe('room date stage', () => {
+  it('fetches weather for every location using the winning date', async () => {
+    const date = new Date().toISOString().slice(0, 10)
+    let weatherRequest: URL | undefined
+    const geocodingRequests: URL[] = []
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(input.toString())
+      if (url.hostname === 'api.geoapify.com') {
+        geocodingRequests.push(url)
+        const query = url.searchParams.get('text')
+        const feature = (name: string, lat: number, lon: number, state: string) => ({
+          type: 'Feature',
+          properties: { name, lat, lon, state, country: 'United States' },
+        })
+        const features =
+          query === 'Seattle'
+            ? [feature('Seattle', 47.6, -122.3, 'Washington')]
+            : query === 'portland'
+              ? [
+                  feature('Portland', 43.66, -70.25, 'Maine'),
+                  feature('Portland', 45.5, -122.7, 'Oregon'),
+                ]
+              : [
+                  feature('Candidate One', 0, 0, 'State One'),
+                  feature('Candidate Two', 47.7, -122.3, 'State Two'),
+                ]
+        return new Response(
+          JSON.stringify({ type: 'FeatureCollection', features }),
+          { status: 200 },
+        )
+      }
+      weatherRequest = url
+      return new Response(
+        JSON.stringify(
+          Array.from({ length: 4 }, (_, index) => ({
+            daily: {
+              time: [date],
+              weather_code: [index === 0 ? 3 : 0],
+              temperature_2m_min: [5],
+              temperature_2m_max: [index === 1 ? 15 : 12],
+              precipitation_probability_max: [20],
+            },
+            daily_units: {
+              temperature_2m_min: '°C',
+              temperature_2m_max: '°C',
+              precipitation_probability_max: '%',
+            },
+          })),
+        ),
+        { status: 200 },
+      )
+    })
+
+    try {
+      const { tools } = makeTools({
+        members: ['u1', 'u2'],
+        dates: [
+          { recordId: 'date-1', addedBy: 'u1', title: date },
+          { recordId: 'date-2', addedBy: 'u2', title: date },
+        ],
+        locations: [
+          { recordId: 'loc-1', addedBy: 'u1', title: 'Seattle' },
+          { recordId: 'loc-2', addedBy: 'u2', title: 'portland' },
+          { recordId: 'loc-3', addedBy: 'u1', title: 'Unmapped query' },
+          { recordId: 'loc-4', addedBy: 'u2', title: 'portland' },
+        ],
+        votes: [
+          { recordId: 'vote-1', optionId: 'date-1', userId: 'u1', value: 1 },
+          { recordId: 'vote-2', optionId: 'date-2', userId: 'u1', value: 1 },
+          { recordId: 'vote-3', optionId: 'date-2', userId: 'u2', value: 1 },
+        ],
+      })
+
+      const result = await actions.getRoomWeather(context(tools, { roomId: 'room' }))
+
+      expect(result).toMatchObject({
+        success: true,
+        data: {
+          selectedDateId: 'date-2',
+          selectedDate: date,
+          locations: [
+            { locationId: 'loc-1', condition: 'Overcast', temperatureMax: 12, precipitationKind: 'probability' },
+            {
+              locationId: 'loc-2',
+              condition: 'Clear sky',
+              temperatureMax: 15,
+              precipitationKind: 'probability',
+              resolvedPlace: 'Portland, Oregon, United States',
+            },
+            { locationId: 'loc-3', resolvedPlace: 'Candidate One, State One, United States' },
+            { locationId: 'loc-4', resolvedPlace: 'Portland, Oregon, United States' },
+          ],
+        },
+      })
+      expect(geocodingRequests).toHaveLength(3)
+      expect(geocodingRequests[0].searchParams.get('text')).toBe('Seattle')
+      expect(geocodingRequests[0].searchParams.get('limit')).toBe('10')
+      expect(geocodingRequests[0].searchParams.get('apiKey')).toBe('test-api-key')
+      expect(geocodingRequests[0].searchParams.has('bias')).toBe(false)
+      expect(geocodingRequests[1].searchParams.get('bias')).toBe('proximity:-122.3,47.6')
+      expect(weatherRequest?.searchParams.get('latitude')).toBe('47.6,45.5,0,45.5')
+      expect(weatherRequest?.searchParams.get('longitude')).toBe('-122.3,-122.7,0,-122.7')
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('ranks dates by approvals, then vetoes, then submission time', () => {
+    const dates = [
+      { recordId: 'earlier', createdAt: '2026-01-01T00:00:00.000Z' },
+      { recordId: 'fewer-vetoes', createdAt: '2026-01-02T00:00:00.000Z' },
+      { recordId: 'more-approvals', createdAt: '2026-01-03T00:00:00.000Z' },
+    ]
+    const votes = [
+      { data: { optionId: 'earlier', value: 1 as const } },
+      { data: { optionId: 'earlier', value: 1 as const } },
+      { data: { optionId: 'earlier', value: -1 as const } },
+      { data: { optionId: 'fewer-vetoes', value: 1 as const } },
+      { data: { optionId: 'fewer-vetoes', value: 1 as const } },
+      { data: { optionId: 'more-approvals', value: 1 as const } },
+      { data: { optionId: 'more-approvals', value: 1 as const } },
+      { data: { optionId: 'more-approvals', value: 1 as const } },
+    ]
+
+    expect(chooseWinningDate(dates, votes)).toBe('more-approvals')
+    expect(
+      chooseWinningDate(
+        dates.slice(0, 2),
+        votes.filter((vote) => vote.data.optionId !== 'more-approvals'),
+      ),
+    ).toBe('fewer-vetoes')
+    expect(
+      chooseWinningDate(dates.slice(0, 2), [
+        { data: { optionId: 'earlier', value: 1 } },
+        { data: { optionId: 'fewer-vetoes', value: 1 } },
+      ]),
+    ).toBe('earlier')
+  })
+
   it('does not allow locations until every member submits a date', async () => {
     const { tools, created } = makeTools({
       members: ['u1', 'u2'],

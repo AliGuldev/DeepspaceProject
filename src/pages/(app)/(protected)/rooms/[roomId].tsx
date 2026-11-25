@@ -41,6 +41,25 @@ interface Vote {
   value: number
 }
 
+interface LocationWeather {
+  locationId: string
+  locationTitle: string
+  resolvedPlace: string | null
+  condition: string | null
+  temperatureMin: number | null
+  temperatureMax: number | null
+  precipitation: number | null
+  precipitationUnit: string | null
+  precipitationKind: 'probability' | 'total' | null
+  error?: string
+}
+
+interface RoomWeather {
+  selectedDateId: string
+  selectedDate: string
+  locations: LocationWeather[]
+}
+
 type CandidateRecord = {
   recordId: string
   data: Candidate
@@ -171,6 +190,9 @@ interface CandidateCardProps {
   canDelete: boolean
   allowVoting: boolean
   isVoting: boolean
+  isSelected?: boolean
+  weather?: LocationWeather
+  weatherLoading?: boolean
   votingValue?: 1 | -1
   onVote: (value: 1 | -1) => void
   onDelete?: () => void
@@ -184,6 +206,9 @@ function CandidateCard({
   canDelete,
   allowVoting,
   isVoting,
+  isSelected = false,
+  weather,
+  weatherLoading,
   votingValue,
   onVote,
   onDelete,
@@ -198,6 +223,7 @@ function CandidateCard({
                 ? new Date(`${candidate.data.title}T00:00:00`).toLocaleDateString()
                 : candidate.data.title}
             </h3>
+            {isSelected && <Badge variant="default" size="sm">Selected date</Badge>}
             {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
             {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
           </div>
@@ -245,6 +271,31 @@ function CandidateCard({
           </span>
         )}
       </div>
+      {candidate.data.kind === 'location' && (
+        <div className="mt-4 border-t border-border pt-3">
+          <h4 className="text-sm font-medium text-foreground">Weather</h4>
+          {weatherLoading ? (
+            <p className="mt-1 text-sm text-muted-foreground">Loading Open-Meteo weather…</p>
+          ) : weather?.error ? (
+            <p className="mt-1 text-sm text-muted-foreground">{weather.error}</p>
+          ) : weather ? (
+            <>
+              {weather.resolvedPlace && (
+                <p className="mt-1 text-sm text-muted-foreground">{weather.resolvedPlace}</p>
+              )}
+              <p className="mt-1 text-sm text-muted-foreground">
+                {weather.condition ?? 'Conditions unavailable'}
+                {weather.temperatureMin !== null && ` · Low ${weather.temperatureMin}°C`}
+                {weather.temperatureMax !== null && ` · High ${weather.temperatureMax}°C`}
+                {weather.precipitation !== null &&
+                  ` · ${weather.precipitationKind === 'probability' ? 'Chance of precipitation' : 'Precipitation total'} ${weather.precipitation}${weather.precipitationUnit ?? ''}`}
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-sm text-muted-foreground">Weather is not loaded yet.</p>
+          )}
+        </div>
+      )}
     </article>
   )
 }
@@ -253,7 +304,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-async function callAction(name: string, params: Record<string, unknown>): Promise<void> {
+async function callAction<T = unknown>(name: string, params: Record<string, unknown>): Promise<T> {
   const token = await getAuthToken()
   if (!token) throw new Error('Sign in and try again.')
 
@@ -272,6 +323,7 @@ async function callAction(name: string, params: Record<string, unknown>): Promis
       : 'Please try again.'
     throw new Error(message)
   }
+  return payload.data as T
 }
 
 interface RoomDetailPageProps {
@@ -286,6 +338,9 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const toast = useToast()
   const [showDateModal, setShowDateModal] = useState(false)
   const [showLocationModal, setShowLocationModal] = useState(false)
+  const [weatherData, setWeatherData] = useState<RoomWeather | null>(null)
+  const [weatherLoading, setWeatherLoading] = useState(false)
+  const [weatherError, setWeatherError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<CandidateRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
@@ -342,6 +397,48 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const hasVotedDate = dateVotes.length > 0
   const dateStageComplete = membersSubmittedDates && hasVotedDate
   const myDate = dates.find((date) => date.data.addedBy === user?.id)
+  const locationSignature = locations.map((location) => location.recordId).join(',')
+  const dateVoteSignature = dateVotes
+    .map((vote) => `${vote.recordId}:${vote.data.value}`)
+    .sort()
+    .join(',')
+
+  useEffect(() => {
+    if (!dateStageComplete || !locationSignature) {
+      setWeatherData(null)
+      setWeatherError(null)
+      setWeatherLoading(false)
+      return
+    }
+
+    let active = true
+    setWeatherData(null)
+    setWeatherLoading(true)
+    setWeatherError(null)
+    void callAction<RoomWeather>('getRoomWeather', { roomId })
+      .then((result) => {
+        if (active) setWeatherData(result)
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setWeatherError(
+            error instanceof Error ? error.message : 'Weather could not be retrieved.',
+          )
+        }
+      })
+      .finally(() => {
+        if (active) setWeatherLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [dateStageComplete, dateVoteSignature, locationSignature, roomId])
+
+  const weatherByLocationId = useMemo(
+    () => new Map(weatherData?.locations.map((item) => [item.locationId, item]) ?? []),
+    [weatherData],
+  )
 
   const handleAddDate = async (date: string): Promise<boolean> => {
     try {
@@ -525,7 +622,8 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                         vetoes={totals?.vetoes ?? 0}
                         myVote={totals?.myVote}
                         canDelete={false}
-                        allowVoting={isOpen && !dateStageComplete}
+                        allowVoting={isOpen}
+                        isSelected={weatherData?.selectedDateId === date.recordId}
                         isVoting={pendingVote?.optionId === date.recordId}
                         votingValue={
                           pendingVote?.optionId === date.recordId ? pendingVote.value : undefined
@@ -547,44 +645,71 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                     been voted on.
                   </p>
                 )}
+                {weatherData && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Weather for {new Date(`${weatherData.selectedDate}T00:00:00`).toLocaleDateString()}.
+                    The date is selected by approvals, then fewer vetoes, then earliest submission.
+                  </p>
+                )}
               </div>
 
               {!dateStageComplete ? (
                 <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                   Waiting for the date stage to finish.
                 </div>
-              ) : locations.length === 0 ? (
-                <EmptyState
-                  title="No locations yet"
-                  description={isOpen ? 'Add the first location for members to vote on.' : 'This room has no locations.'}
-                />
               ) : (
-                <div className="space-y-3">
-                  {locations.map((location) => {
-                    const totals = voteTotals.get(location.recordId)
-                    const canDelete =
-                      location.data.addedBy === user?.id || room.data.ownerId === user?.id
-                    return (
-                      <CandidateCard
-                        key={location.recordId}
-                        candidate={location}
-                        approvals={totals?.approvals ?? 0}
-                        vetoes={totals?.vetoes ?? 0}
-                        myVote={totals?.myVote}
-                        canDelete={canDelete}
-                        allowVoting={isOpen}
-                        isVoting={pendingVote?.optionId === location.recordId}
-                        votingValue={
-                          pendingVote?.optionId === location.recordId
-                            ? pendingVote.value
-                            : undefined
-                        }
-                        onVote={(value) => void handleVote(location.recordId, value)}
-                        onDelete={() => setDeleteTarget(location)}
-                      />
-                    )
-                  })}
-                </div>
+                <>
+                  {weatherError && (
+                    <p role="alert" className="text-sm text-destructive">
+                      {weatherError}
+                    </p>
+                  )}
+                  {locations.length === 0 ? (
+                    <EmptyState
+                      title="No locations yet"
+                      description={isOpen ? 'Add the first location for members to vote on.' : 'This room has no locations.'}
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      {locations.map((location) => {
+                        const totals = voteTotals.get(location.recordId)
+                        const canDelete =
+                          location.data.addedBy === user?.id || room.data.ownerId === user?.id
+                        return (
+                          <CandidateCard
+                            key={location.recordId}
+                            candidate={location}
+                            approvals={totals?.approvals ?? 0}
+                            vetoes={totals?.vetoes ?? 0}
+                            myVote={totals?.myVote}
+                            canDelete={canDelete}
+                            allowVoting={isOpen}
+                            isVoting={pendingVote?.optionId === location.recordId}
+                            weather={weatherByLocationId.get(location.recordId)}
+                            weatherLoading={weatherLoading}
+                            votingValue={
+                              pendingVote?.optionId === location.recordId
+                                ? pendingVote.value
+                                : undefined
+                            }
+                            onVote={(value) => void handleVote(location.recordId, value)}
+                            onDelete={() => setDeleteTarget(location)}
+                          />
+                        )
+                      })}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Weather data by{' '}
+                    <a href="https://open-meteo.com/" target="_blank" rel="noreferrer" className="underline">
+                      Open-Meteo
+                    </a>
+                    {' · '}Geocoding by{' '}
+                    <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer" className="underline">
+                      Geoapify
+                    </a>
+                  </p>
+                </>
               )}
             </section>
           </div>

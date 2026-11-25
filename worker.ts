@@ -113,6 +113,7 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
    * calls always forward the signed-in caller's JWT instead.
    */
   APP_OWNER_JWT: string
+  GEOAPIFY_API_KEY?: string
   /**
    * Enables /api/debug/* only when exactly "true". The route still requires
    * an authenticated app owner/admin. deepspace dev/test set it locally.
