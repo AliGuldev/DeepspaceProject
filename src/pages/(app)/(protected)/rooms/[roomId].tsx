@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getAuthToken, useQuery, useUser } from 'deepspace'
-import { ArrowLeft, Pencil, Plus, ThumbsDown, ThumbsUp, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  LocateFixed,
+  MapPin,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+} from 'lucide-react'
 import {
   Badge,
   Button,
@@ -9,7 +16,6 @@ import {
   Input,
   Label,
   Modal,
-  Textarea,
   useToast,
   ConfirmModal,
 } from '@/components/ui'
@@ -21,11 +27,10 @@ interface Room {
   ownerId: string
 }
 
-interface Option {
+interface Location {
   roomId: string
+  kind: 'option' | 'location'
   title: string
-  pros: string[]
-  cons: string[]
   addedBy: string
 }
 
@@ -36,9 +41,9 @@ interface Vote {
   value: number
 }
 
-type OptionRecord = {
+type LocationRecord = {
   recordId: string
-  data: Option
+  data: Location
 }
 
 type RoomRecord = {
@@ -46,105 +51,64 @@ type RoomRecord = {
   data: Room
 }
 
-interface OptionModalProps {
+interface LocationModalProps {
   isOpen: boolean
-  option: OptionRecord | null
   onClose: () => void
-  onSave: (title: string, pros: string[], cons: string[]) => Promise<boolean>
+  onAdd: (location: string) => Promise<boolean>
 }
 
-function OptionModal({ isOpen, option, onClose, onSave }: OptionModalProps) {
-  const [title, setTitle] = useState(option?.data.title ?? '')
-  const [pros, setPros] = useState(option?.data.pros.join('\n') ?? '')
-  const [cons, setCons] = useState(option?.data.cons.join('\n') ?? '')
+function LocationModal({ isOpen, onClose, onAdd }: LocationModalProps) {
+  const [location, setLocation] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!isOpen) return
-    setTitle(option?.data.title ?? '')
-    setPros(option?.data.pros.join('\n') ?? '')
-    setCons(option?.data.cons.join('\n') ?? '')
-  }, [isOpen, option?.recordId])
+    if (isOpen) setLocation('')
+  }, [isOpen])
 
   const handleSubmit = async () => {
-    const nextTitle = title.trim()
-    if (!nextTitle || saving) return
+    const nextLocation = location.trim()
+    if (!nextLocation || saving) return
 
     setSaving(true)
     try {
-      const splitLines = (value: string) =>
-        value
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean)
-      if (await onSave(nextTitle, splitLines(pros), splitLines(cons))) onClose()
+      if (await onAdd(nextLocation)) onClose()
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <Modal open={isOpen} onClose={saving ? () => undefined : onClose} size="md">
+    <Modal open={isOpen} onClose={saving ? () => undefined : onClose} size="sm">
       <Modal.Header>
-        <Modal.Title>{option ? 'Edit Option' : 'Add an Option'}</Modal.Title>
-        <Modal.Description>Enter one pro or con per line.</Modal.Description>
+        <Modal.Title>Add your location</Modal.Title>
+        <Modal.Description>Enter a place name or address for members to vote on.</Modal.Description>
       </Modal.Header>
       <Modal.Body>
-        <div className="space-y-4">
-          <div>
-            <Label htmlFor="option-title" className="mb-2 block">
-              Title
-            </Label>
-            <Input
-              id="option-title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Enter option title"
-              autoFocus
-            />
-          </div>
-          <div>
-            <Label htmlFor="option-pros" className="mb-2 block">
-              Pros
-            </Label>
-            <Textarea
-              id="option-pros"
-              value={pros}
-              onChange={(event) => setPros(event.target.value)}
-              placeholder="One pro per line"
-              rows={4}
-              className="resize-y"
-            />
-          </div>
-          <div>
-            <Label htmlFor="option-cons" className="mb-2 block">
-              Cons
-            </Label>
-            <Textarea
-              id="option-cons"
-              value={cons}
-              onChange={(event) => setCons(event.target.value)}
-              placeholder="One con per line"
-              rows={4}
-              className="resize-y"
-            />
-          </div>
-        </div>
+        <Label htmlFor="room-location" className="mb-2 block">
+          Location
+        </Label>
+        <Input
+          id="room-location"
+          value={location}
+          onChange={(event) => setLocation(event.target.value)}
+          placeholder="City, address, or place name"
+          autoFocus
+        />
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
-        <Button onClick={() => void handleSubmit()} disabled={!title.trim()} loading={saving}>
-          {option ? 'Save changes' : 'Add Option'}
+        <Button onClick={() => void handleSubmit()} disabled={!location.trim()} loading={saving}>
+          Add location
         </Button>
       </Modal.Footer>
     </Modal>
   )
 }
 
-interface OptionCardProps {
-  option: OptionRecord
+interface LocationCardProps {
+  location: LocationRecord
   approvals: number
   vetoes: number
   myVote: number | undefined
@@ -153,12 +117,11 @@ interface OptionCardProps {
   isVoting: boolean
   votingValue?: 1 | -1
   onVote: (value: 1 | -1) => void
-  onEdit: () => void
   onDelete: () => void
 }
 
-function OptionCard({
-  option,
+function LocationCard({
+  location,
   approvals,
   vetoes,
   myVote,
@@ -167,64 +130,29 @@ function OptionCard({
   isVoting,
   votingValue,
   onVote,
-  onEdit,
   onDelete,
-}: OptionCardProps) {
+}: LocationCardProps) {
   return (
     <article className="rounded-xl border border-border bg-card/60 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium text-foreground">{option.data.title}</h3>
+            <h3 className="font-medium text-foreground">{location.data.title}</h3>
             {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
             {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
           </div>
         </div>
         {canManage && (
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground"
-              onClick={onEdit}
-              aria-label={`Edit ${option.data.title}`}
-            >
-              <Pencil aria-hidden="true" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
-              onClick={onDelete}
-              aria-label={`Delete ${option.data.title}`}
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
+            onClick={onDelete}
+            aria-label={`Delete ${location.data.title}`}
+          >
+            <Trash2 aria-hidden="true" />
+          </Button>
         )}
-      </div>
-
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        <div>
-          <h4 className="mb-1 text-sm font-medium text-foreground">Pros</h4>
-          {option.data.pros.length > 0 ? (
-            <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
-              {option.data.pros.map((pro, index) => <li key={`${index}-${pro}`}>{pro}</li>)}
-            </ul>
-          ) : (
-            <p className="text-sm text-muted-foreground">None added</p>
-          )}
-        </div>
-        <div>
-          <h4 className="mb-1 text-sm font-medium text-foreground">Cons</h4>
-          {option.data.cons.length > 0 ? (
-            <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
-              {option.data.cons.map((con, index) => <li key={`${index}-${con}`}>{con}</li>)}
-            </ul>
-          ) : (
-            <p className="text-sm text-muted-foreground">None added</p>
-          )}
-        </div>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
@@ -295,18 +223,18 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const roomId = routeRoomId ?? ''
   const { user } = useUser()
   const toast = useToast()
-  const [editTarget, setEditTarget] = useState<OptionRecord | null>(null)
-  const [showCreateModal, setShowCreateModal] = useState(false)
-  const [deleteTarget, setDeleteTarget] = useState<OptionRecord | null>(null)
+  const [showLocationModal, setShowLocationModal] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<LocationRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
 
   const { records: rooms, status: roomsStatus } = useQuery<Room>('rooms')
-  const { records: options, status: optionsStatus } = useQuery<Option>('options', {
+  const { records: optionRecords, status: optionsStatus } = useQuery<Location>('options', {
     where: { roomId },
     orderBy: 'createdAt',
     orderDir: 'asc',
   })
+  const locations = optionRecords.filter((option) => option.data.kind === 'location')
   const { records: votes, status: votesStatus } = useQuery<Vote>('votes', {
     where: { roomId },
   })
@@ -329,41 +257,34 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     })
     return totals
   }, [votes, user?.id])
-
-  const handleSaveOption = async (
-    title: string,
-    pros: string[],
-    cons: string[],
-  ): Promise<boolean> => {
+  const handleAddLocation = async (location: string): Promise<boolean> => {
     try {
-      await callAction(editTarget ? 'updateRoomOption' : 'createRoomOption', {
-        ...(editTarget ? { optionId: editTarget.recordId } : { roomId }),
-        title,
-        pros,
-        cons,
+      await callAction('addRoomLocation', {
+        roomId,
+        title: location,
       })
-      toast.success(editTarget ? 'Option updated' : 'Option added', `"${title}" was saved.`)
+      toast.success('Location added', `"${location}" is ready for votes.`)
       return true
     } catch (error) {
       toast.error(
-        editTarget ? 'Could not update option' : 'Could not add option',
+        'Could not add location',
         error instanceof Error ? error.message : 'Please try again.',
       )
       return false
     }
   }
 
-  const handleDeleteOption = async () => {
+  const handleDeleteLocation = async () => {
     if (!deleteTarget || deleting) return
 
     setDeleting(true)
     try {
-      await callAction('deleteRoomOption', { optionId: deleteTarget.recordId })
-      toast.success('Option deleted', `"${deleteTarget.data.title}" was deleted.`)
+      await callAction('deleteRoomLocation', { optionId: deleteTarget.recordId })
+      toast.success('Location deleted', `"${deleteTarget.data.title}" was deleted.`)
       setDeleteTarget(null)
     } catch (error) {
       toast.error(
-        'Could not delete option',
+        'Could not delete location',
         error instanceof Error ? error.message : 'Please try again.',
       )
     } finally {
@@ -407,10 +328,20 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                 )}
               </div>
               {isOpen && (
-                <Button onClick={() => setShowCreateModal(true)}>
-                  <Plus aria-hidden="true" />
-                  Add Option
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={() => setShowLocationModal(true)}>
+                    <MapPin aria-hidden="true" />
+                    Add location
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled
+                    title="Location detection is not available yet."
+                  >
+                    <LocateFixed aria-hidden="true" />
+                    Use my location (coming soon)
+                  </Button>
+                </div>
               )}
             </div>
           )}
@@ -427,35 +358,34 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
           <EmptyState title="Could not load this room" description="Refresh the page and try again." />
         ) : !room ? (
           <EmptyState title="Room not found" description="It may have been removed." />
-        ) : options.length === 0 ? (
+        ) : locations.length === 0 ? (
           <EmptyState
-            title="No options yet"
-            description={isOpen ? 'Add the first option for this room.' : 'This room has no options.'}
-            action={isOpen ? { label: 'Add option', onClick: () => setShowCreateModal(true) } : undefined}
+            title="No locations yet"
+            description={isOpen ? 'Add the first location for members to vote on.' : 'This room has no locations.'}
+            action={isOpen ? { label: 'Add location', onClick: () => setShowLocationModal(true) } : undefined}
           />
         ) : (
           <div className="space-y-4">
-            {options.map((option) => {
-              const totals = voteTotals.get(option.recordId)
+            {locations.map((location) => {
+              const totals = voteTotals.get(location.recordId)
               const canManage =
-                option.data.addedBy === user?.id || room.data.ownerId === user?.id
+                location.data.addedBy === user?.id || room.data.ownerId === user?.id
 
               return (
-                <OptionCard
-                  key={option.recordId}
-                  option={option}
+                <LocationCard
+                  key={location.recordId}
+                  location={location}
                   approvals={totals?.approvals ?? 0}
                   vetoes={totals?.vetoes ?? 0}
                   myVote={totals?.myVote}
                   canManage={canManage}
                   isOpen={isOpen}
-                  isVoting={pendingVote?.optionId === option.recordId}
+                  isVoting={pendingVote?.optionId === location.recordId}
                   votingValue={
-                    pendingVote?.optionId === option.recordId ? pendingVote.value : undefined
+                    pendingVote?.optionId === location.recordId ? pendingVote.value : undefined
                   }
-                  onVote={(value) => void handleVote(option.recordId, value)}
-                  onEdit={() => setEditTarget(option)}
-                  onDelete={() => setDeleteTarget(option)}
+                  onVote={(value) => void handleVote(location.recordId, value)}
+                  onDelete={() => setDeleteTarget(location)}
                 />
               )
             })}
@@ -463,15 +393,10 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
         )}
       </main>
 
-      <OptionModal
-        key={editTarget?.recordId ?? 'create'}
-        isOpen={showCreateModal || editTarget !== null}
-        option={editTarget}
-        onClose={() => {
-          setShowCreateModal(false)
-          setEditTarget(null)
-        }}
-        onSave={handleSaveOption}
+      <LocationModal
+        isOpen={showLocationModal}
+        onClose={() => setShowLocationModal(false)}
+        onAdd={handleAddLocation}
       />
 
       <ConfirmModal
@@ -479,9 +404,9 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
         onClose={() => {
           if (!deleting) setDeleteTarget(null)
         }}
-        onConfirm={() => void handleDeleteOption()}
-        title={deleteTarget ? `Delete "${deleteTarget.data.title}"?` : 'Delete option?'}
-        description="This cannot be undone."
+        onConfirm={() => void handleDeleteLocation()}
+        title={deleteTarget ? `Delete "${deleteTarget.data.title}"?` : 'Delete location?'}
+        description="This location will be removed. This cannot be undone."
         confirmText="Delete"
         loading={deleting}
       />

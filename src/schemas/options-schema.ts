@@ -4,6 +4,13 @@ export const optionsSchema: CollectionSchema = {
   name: 'options',
   columns: [
     { name: 'roomId', storage: 'text', interpretation: 'plain', required: true, immutable: true },
+    {
+      name: 'kind',
+      storage: 'text',
+      interpretation: { kind: 'select', options: ['option', 'location'] },
+      required: true,
+      default: 'option',
+    },
     { name: 'title', storage: 'text', interpretation: 'plain', required: true },
     { name: 'pros', storage: 'text', interpretation: { kind: 'json' }, required: true },
     { name: 'cons', storage: 'text', interpretation: { kind: 'json' }, required: true },

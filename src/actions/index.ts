@@ -8,6 +8,7 @@ interface RoomData extends Record<string, unknown> {
 
 interface OptionData extends Record<string, unknown> {
   roomId: string
+  kind: 'option' | 'location'
   title: string
   pros: string[]
   cons: string[]
@@ -25,62 +26,44 @@ function requiredString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-function stringList(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null
-  return value.map((item) => item.trim()).filter(Boolean)
-}
-
 const failure = (error: string) => ({ success: false as const, error })
 
 export const actions: Record<string, ActionHandler<Env>> = {
-  createRoomOption: async ({ userId, params, tools }) => {
+  addRoomLocation: async ({ userId, params, tools }) => {
     const roomId = requiredString(params.roomId)
     const title = requiredString(params.title)
-    const pros = stringList(params.pros)
-    const cons = stringList(params.cons)
-    if (!roomId || !title || !pros || !cons) return failure('Room, title, pros, and cons are required.')
+    if (!roomId || !title) return failure('Room and location are required.')
 
     const roomResult = await tools.get<RoomData>('rooms', roomId)
     if (!roomResult.success) return failure('Room not found.')
     if (roomResult.data.record.data.status !== 'open') {
-      return failure('Options can only be added to an open room.')
+      return failure('Locations can only be added to an open room.')
     }
 
-    return tools.create<OptionData>('options', { roomId, title, pros, cons, addedBy: userId })
+    return tools.create<OptionData>('options', {
+      roomId,
+      kind: 'location',
+      title,
+      pros: [],
+      cons: [],
+      addedBy: userId,
+    })
   },
 
-  updateRoomOption: async ({ userId, params, tools }) => {
+  deleteRoomLocation: async ({ userId, params, tools }) => {
     const optionId = requiredString(params.optionId)
-    const title = requiredString(params.title)
-    const pros = stringList(params.pros)
-    const cons = stringList(params.cons)
-    if (!optionId || !title || !pros || !cons) return failure('Option, title, pros, and cons are required.')
+    if (!optionId) return failure('Location is required.')
 
     const optionResult = await tools.get<OptionData>('options', optionId)
-    if (!optionResult.success) return failure('Option not found.')
+    if (!optionResult.success || optionResult.data.record.data.kind !== 'location') {
+      return failure('Location not found.')
+    }
     const option = optionResult.data.record.data
 
     const roomResult = await tools.get<RoomData>('rooms', option.roomId)
     if (!roomResult.success) return failure('Room not found.')
     if (option.addedBy !== userId && roomResult.data.record.data.ownerId !== userId) {
-      return failure('Only the option author or room owner can edit this option.')
-    }
-
-    return tools.update<OptionData>('options', optionId, { title, pros, cons })
-  },
-
-  deleteRoomOption: async ({ userId, params, tools }) => {
-    const optionId = requiredString(params.optionId)
-    if (!optionId) return failure('Option is required.')
-
-    const optionResult = await tools.get<OptionData>('options', optionId)
-    if (!optionResult.success) return failure('Option not found.')
-    const option = optionResult.data.record.data
-
-    const roomResult = await tools.get<RoomData>('rooms', option.roomId)
-    if (!roomResult.success) return failure('Room not found.')
-    if (option.addedBy !== userId && roomResult.data.record.data.ownerId !== userId) {
-      return failure('Only the option author or room owner can delete this option.')
+      return failure('Only the location author or room owner can delete this location.')
     }
 
     return tools.remove('options', optionId)
@@ -101,8 +84,12 @@ export const actions: Record<string, ActionHandler<Env>> = {
     }
 
     const optionResult = await tools.get<OptionData>('options', optionId)
-    if (!optionResult.success || optionResult.data.record.data.roomId !== roomId) {
-      return failure('Option not found in this room.')
+    if (
+      !optionResult.success ||
+      optionResult.data.record.data.roomId !== roomId ||
+      optionResult.data.record.data.kind !== 'location'
+    ) {
+      return failure('Location not found in this room.')
     }
 
     const voteQuery = () =>
