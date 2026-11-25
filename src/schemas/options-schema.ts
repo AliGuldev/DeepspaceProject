@@ -7,7 +7,7 @@ export const optionsSchema: CollectionSchema = {
     {
       name: 'kind',
       storage: 'text',
-      interpretation: { kind: 'select', options: ['option', 'location'] },
+      interpretation: { kind: 'select', options: ['option', 'date', 'location'] },
       required: true,
       default: 'option',
     },

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { getAuthToken, useQuery, useUser } from 'deepspace'
+import { getAuthToken, useQuery, useUser, useUsers, type RoomUser } from 'deepspace'
 import {
   ArrowLeft,
   LocateFixed,
@@ -27,9 +27,9 @@ interface Room {
   ownerId: string
 }
 
-interface Location {
+interface Candidate {
   roomId: string
-  kind: 'option' | 'location'
+  kind: 'option' | 'date' | 'location'
   title: string
   addedBy: string
 }
@@ -41,9 +41,9 @@ interface Vote {
   value: number
 }
 
-type LocationRecord = {
+type CandidateRecord = {
   recordId: string
-  data: Location
+  data: Candidate
 }
 
 type RoomRecord = {
@@ -55,6 +55,62 @@ interface LocationModalProps {
   isOpen: boolean
   onClose: () => void
   onAdd: (location: string) => Promise<boolean>
+}
+
+interface DateModalProps {
+  isOpen: boolean
+  initialDate?: string
+  onClose: () => void
+  onAdd: (date: string) => Promise<boolean>
+}
+
+function DateModal({ isOpen, initialDate, onClose, onAdd }: DateModalProps) {
+  const [date, setDate] = useState(initialDate ?? '')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (isOpen) setDate(initialDate ?? '')
+  }, [isOpen, initialDate])
+
+  const handleSubmit = async () => {
+    if (!date || saving) return
+
+    setSaving(true)
+    try {
+      if (await onAdd(date)) onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open={isOpen} onClose={saving ? () => undefined : onClose} size="sm">
+      <Modal.Header>
+        <Modal.Title>{initialDate ? 'Update your date' : 'Add your date'}</Modal.Title>
+        <Modal.Description>Each member adds one date for the group to consider.</Modal.Description>
+      </Modal.Header>
+      <Modal.Body>
+        <Label htmlFor="room-date" className="mb-2 block">
+          Date
+        </Label>
+        <Input
+          id="room-date"
+          type="date"
+          value={date}
+          onChange={(event) => setDate(event.target.value)}
+          autoFocus
+        />
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button onClick={() => void handleSubmit()} disabled={!date} loading={saving}>
+          {initialDate ? 'Update date' : 'Add date'}
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  )
 }
 
 function LocationModal({ isOpen, onClose, onAdd }: LocationModalProps) {
@@ -107,48 +163,52 @@ function LocationModal({ isOpen, onClose, onAdd }: LocationModalProps) {
   )
 }
 
-interface LocationCardProps {
-  location: LocationRecord
+interface CandidateCardProps {
+  candidate: CandidateRecord
   approvals: number
   vetoes: number
   myVote: number | undefined
-  canManage: boolean
-  isOpen: boolean
+  canDelete: boolean
+  allowVoting: boolean
   isVoting: boolean
   votingValue?: 1 | -1
   onVote: (value: 1 | -1) => void
-  onDelete: () => void
+  onDelete?: () => void
 }
 
-function LocationCard({
-  location,
+function CandidateCard({
+  candidate,
   approvals,
   vetoes,
   myVote,
-  canManage,
-  isOpen,
+  canDelete,
+  allowVoting,
   isVoting,
   votingValue,
   onVote,
   onDelete,
-}: LocationCardProps) {
+}: CandidateCardProps) {
   return (
     <article className="rounded-xl border border-border bg-card/60 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium text-foreground">{location.data.title}</h3>
+            <h3 className="font-medium text-foreground">
+              {candidate.data.kind === 'date'
+                ? new Date(`${candidate.data.title}T00:00:00`).toLocaleDateString()
+                : candidate.data.title}
+            </h3>
             {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
             {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
           </div>
         </div>
-        {canManage && (
+        {canDelete && (
           <Button
             variant="ghost"
             size="icon"
             className="size-8 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
             onClick={onDelete}
-            aria-label={`Delete ${location.data.title}`}
+            aria-label={`Delete ${candidate.data.title}`}
           >
             <Trash2 aria-hidden="true" />
           </Button>
@@ -156,7 +216,7 @@ function LocationCard({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        {isOpen ? (
+        {allowVoting ? (
           <>
             <Button
               variant={myVote === 1 ? 'default' : 'secondary'}
@@ -222,19 +282,22 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const { roomId: routeRoomId } = useParams()
   const roomId = routeRoomId ?? ''
   const { user } = useUser()
+  const { users: roomMembers, usersLoaded } = useUsers()
   const toast = useToast()
+  const [showDateModal, setShowDateModal] = useState(false)
   const [showLocationModal, setShowLocationModal] = useState(false)
-  const [deleteTarget, setDeleteTarget] = useState<LocationRecord | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<CandidateRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
 
   const { records: rooms, status: roomsStatus } = useQuery<Room>('rooms')
-  const { records: optionRecords, status: optionsStatus } = useQuery<Location>('options', {
+  const { records: candidates, status: optionsStatus } = useQuery<Candidate>('options', {
     where: { roomId },
     orderBy: 'createdAt',
     orderDir: 'asc',
   })
-  const locations = optionRecords.filter((option) => option.data.kind === 'location')
+  const dates = candidates.filter((candidate) => candidate.data.kind === 'date')
+  const locations = candidates.filter((candidate) => candidate.data.kind === 'location')
   const { records: votes, status: votesStatus } = useQuery<Vote>('votes', {
     where: { roomId },
   })
@@ -245,6 +308,14 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     roomsStatus === 'loading' || optionsStatus === 'loading' || votesStatus === 'loading'
   const hasError =
     roomsStatus === 'error' || optionsStatus === 'error' || votesStatus === 'error'
+
+  const members = useMemo(() => {
+    const byId = new Map<string, RoomUser>(roomMembers.map((member) => [member.id, member]))
+    if (user && !byId.has(user.id)) {
+      byId.set(user.id, { id: user.id, name: user.name || 'You', role: 'member' })
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [roomMembers, user])
 
   const voteTotals = useMemo(() => {
     const totals = new Map<string, { approvals: number; vetoes: number; myVote?: number }>()
@@ -257,6 +328,35 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     })
     return totals
   }, [votes, user?.id])
+  const dateSubmitters = useMemo(
+    () => new Set(dates.map((date) => date.data.addedBy)),
+    [dates],
+  )
+  const dateIds = useMemo(() => new Set(dates.map((date) => date.recordId)), [dates])
+  const dateVotes = useMemo(
+    () => votes.filter((vote) => dateIds.has(vote.data.optionId)),
+    [dateIds, votes],
+  )
+  const membersSubmittedDates =
+    usersLoaded && members.length > 0 && members.every((member) => dateSubmitters.has(member.id))
+  const hasVotedDate = dateVotes.length > 0
+  const dateStageComplete = membersSubmittedDates && hasVotedDate
+  const myDate = dates.find((date) => date.data.addedBy === user?.id)
+
+  const handleAddDate = async (date: string): Promise<boolean> => {
+    try {
+      await callAction('addRoomDate', { roomId, title: date })
+      toast.success(myDate ? 'Date updated' : 'Date added', `${date} is ready for votes.`)
+      return true
+    } catch (error) {
+      toast.error(
+        'Could not save date',
+        error instanceof Error ? error.message : 'Please try again.',
+      )
+      return false
+    }
+  }
+
   const handleAddLocation = async (location: string): Promise<boolean> => {
     try {
       await callAction('addRoomLocation', {
@@ -274,7 +374,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     }
   }
 
-  const handleDeleteLocation = async () => {
+  const handleDeleteCandidate = async () => {
     if (!deleteTarget || deleting) return
 
     setDeleting(true)
@@ -327,7 +427,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                   <p className="mt-1 text-muted-foreground">{room.data.description}</p>
                 )}
               </div>
-              {isOpen && (
+              {isOpen && dateStageComplete && (
                 <div className="flex flex-wrap gap-2">
                   <Button variant="secondary" onClick={() => setShowLocationModal(true)}>
                     <MapPin aria-hidden="true" />
@@ -358,40 +458,145 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
           <EmptyState title="Could not load this room" description="Refresh the page and try again." />
         ) : !room ? (
           <EmptyState title="Room not found" description="It may have been removed." />
-        ) : locations.length === 0 ? (
-          <EmptyState
-            title="No locations yet"
-            description={isOpen ? 'Add the first location for members to vote on.' : 'This room has no locations.'}
-            action={isOpen ? { label: 'Add location', onClick: () => setShowLocationModal(true) } : undefined}
-          />
         ) : (
-          <div className="space-y-4">
-            {locations.map((location) => {
-              const totals = voteTotals.get(location.recordId)
-              const canManage =
-                location.data.addedBy === user?.id || room.data.ownerId === user?.id
+          <div className="space-y-8">
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold text-foreground">1. Choose a date</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Every member adds one date. Locations unlock after everyone has added a date
+                    and at least one date has a vote.
+                  </p>
+                </div>
+                {isOpen && !dateStageComplete && (
+                  <Button variant="secondary" onClick={() => setShowDateModal(true)}>
+                    {myDate ? 'Update my date' : 'Add my date'}
+                  </Button>
+                )}
+              </div>
 
-              return (
-                <LocationCard
-                  key={location.recordId}
-                  location={location}
-                  approvals={totals?.approvals ?? 0}
-                  vetoes={totals?.vetoes ?? 0}
-                  myVote={totals?.myVote}
-                  canManage={canManage}
-                  isOpen={isOpen}
-                  isVoting={pendingVote?.optionId === location.recordId}
-                  votingValue={
-                    pendingVote?.optionId === location.recordId ? pendingVote.value : undefined
-                  }
-                  onVote={(value) => void handleVote(location.recordId, value)}
-                  onDelete={() => setDeleteTarget(location)}
+              <div className="rounded-xl border border-border bg-card/60 p-4">
+                <h3 className="mb-3 font-medium text-foreground">Member participation</h3>
+                {!usersLoaded ? (
+                  <p className="text-sm text-muted-foreground">Loading members…</p>
+                ) : members.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No members found.</p>
+                ) : (
+                  <ul className="space-y-3">
+                    {members.map((member) => {
+                      const hasDate = dateSubmitters.has(member.id)
+                      const hasVoted = dateVotes.some((vote) => vote.data.userId === member.id)
+                      return (
+                        <li
+                          key={member.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                        >
+                          <span className="font-medium text-foreground">{member.name}</span>
+                          <span className="flex flex-wrap gap-2">
+                            <Badge variant={hasDate ? 'success' : 'warning'} size="sm">
+                              {hasDate ? 'Date added' : 'Needs date'}
+                            </Badge>
+                            <Badge variant={hasVoted ? 'success' : 'warning'} size="sm">
+                              {hasVoted ? 'Voted' : 'Needs to vote'}
+                            </Badge>
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+
+              {dates.length === 0 ? (
+                <EmptyState
+                  title="No dates yet"
+                  description={isOpen ? 'Add your date to get the group started.' : 'This room has no dates.'}
                 />
-              )
-            })}
+              ) : (
+                <div className="space-y-3">
+                  {dates.map((date) => {
+                    const totals = voteTotals.get(date.recordId)
+                    return (
+                      <CandidateCard
+                        key={date.recordId}
+                        candidate={date}
+                        approvals={totals?.approvals ?? 0}
+                        vetoes={totals?.vetoes ?? 0}
+                        myVote={totals?.myVote}
+                        canDelete={false}
+                        allowVoting={isOpen && !dateStageComplete}
+                        isVoting={pendingVote?.optionId === date.recordId}
+                        votingValue={
+                          pendingVote?.optionId === date.recordId ? pendingVote.value : undefined
+                        }
+                        onVote={(value) => void handleVote(date.recordId, value)}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-xl font-semibold text-foreground">2. Choose a location</h2>
+                {!dateStageComplete && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Locations unlock when every member has added a date and at least one date has
+                    been voted on.
+                  </p>
+                )}
+              </div>
+
+              {!dateStageComplete ? (
+                <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                  Waiting for the date stage to finish.
+                </div>
+              ) : locations.length === 0 ? (
+                <EmptyState
+                  title="No locations yet"
+                  description={isOpen ? 'Add the first location for members to vote on.' : 'This room has no locations.'}
+                />
+              ) : (
+                <div className="space-y-3">
+                  {locations.map((location) => {
+                    const totals = voteTotals.get(location.recordId)
+                    const canDelete =
+                      location.data.addedBy === user?.id || room.data.ownerId === user?.id
+                    return (
+                      <CandidateCard
+                        key={location.recordId}
+                        candidate={location}
+                        approvals={totals?.approvals ?? 0}
+                        vetoes={totals?.vetoes ?? 0}
+                        myVote={totals?.myVote}
+                        canDelete={canDelete}
+                        allowVoting={isOpen}
+                        isVoting={pendingVote?.optionId === location.recordId}
+                        votingValue={
+                          pendingVote?.optionId === location.recordId
+                            ? pendingVote.value
+                            : undefined
+                        }
+                        onVote={(value) => void handleVote(location.recordId, value)}
+                        onDelete={() => setDeleteTarget(location)}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </section>
           </div>
         )}
       </main>
+
+      <DateModal
+        isOpen={showDateModal}
+        initialDate={myDate?.data.title}
+        onClose={() => setShowDateModal(false)}
+        onAdd={handleAddDate}
+      />
 
       <LocationModal
         isOpen={showLocationModal}
@@ -404,7 +609,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
         onClose={() => {
           if (!deleting) setDeleteTarget(null)
         }}
-        onConfirm={() => void handleDeleteLocation()}
+        onConfirm={() => void handleDeleteCandidate()}
         title={deleteTarget ? `Delete "${deleteTarget.data.title}"?` : 'Delete location?'}
         description="This location will be removed. This cannot be undone."
         confirmText="Delete"
