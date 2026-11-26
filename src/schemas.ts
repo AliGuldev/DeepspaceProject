@@ -16,6 +16,7 @@ import { roomsSchema } from './schemas/rooms-schema'
 import { optionsSchema } from './schemas/options-schema'
 import { votesSchema } from './schemas/votes-schema'
 import { eventSearchesSchema } from './schemas/event-searches-schema'
+import { roomCalendarEventsSchema } from './schemas/room-calendar-events-schema'
 
 export const schemas: CollectionSchema[] = [
   itemsSchema,
@@ -23,6 +24,7 @@ export const schemas: CollectionSchema[] = [
   optionsSchema,
   votesSchema,
   eventSearchesSchema,
+  roomCalendarEventsSchema,
   usersSchema,
   settingsSchema,
 ]

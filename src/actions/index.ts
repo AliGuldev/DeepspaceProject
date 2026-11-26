@@ -17,6 +17,13 @@ interface UserData extends Record<string, unknown> {
   email?: string
 }
 
+interface RoomCalendarEventData extends Record<string, unknown> {
+  roomId: string
+  ownerId: string
+  status: 'created' | 'needs_auth' | 'failed'
+  calendarEventCreatedAt?: string
+}
+
 interface OptionData extends Record<string, unknown> {
   roomId: string
   kind: 'option' | 'date' | 'location'
@@ -632,26 +639,45 @@ function nextAllDayEventDate(date: string): string | null {
 async function saveCalendarEventStatus(
   tools: ActionTools,
   roomId: string,
-  status: NonNullable<RoomData['calendarEventStatus']>,
+  userId: string,
+  status: RoomCalendarEventData['status'],
   createdAt?: string,
 ): Promise<string | undefined> {
   try {
-    const updated = await tools.update<RoomData>('rooms', roomId, {
-      calendarEventStatus: status,
-      ...(createdAt ? { calendarEventCreatedAt: createdAt } : {}),
+    const recordsResult = await tools.query<RoomCalendarEventData>('roomCalendarEvents', {
+      where: { roomId, ownerId: userId },
+      limit: 10,
     })
-    return updated.success
+    if (!recordsResult.success) {
+      return `Calendar event status could not be saved: ${recordsResult.error}`
+    }
+    if (recordsResult.data.count > recordsResult.data.records.length) {
+      return 'Calendar event status could not be saved: too many status records were found.'
+    }
+
+    const existing = recordsResult.data.records[0]
+    const data = {
+      roomId,
+      ownerId: userId,
+      status,
+      ...(createdAt ? { calendarEventCreatedAt: createdAt } : {}),
+    }
+    const saved = existing
+      ? await tools.update<RoomCalendarEventData>('roomCalendarEvents', existing.recordId, data)
+      : await tools.create<RoomCalendarEventData>('roomCalendarEvents', data)
+    return saved.success
       ? undefined
-      : `Calendar event status could not be saved: ${updated.error}`
+      : `Calendar event status could not be saved: ${saved.error}`
   } catch (error) {
     return `Calendar event status could not be saved: ${
-      error instanceof Error ? error.message : 'Room update failed.'
+      error instanceof Error ? error.message : 'Status update failed.'
     }`
   }
 }
 
 async function createCalendarEventForRoom(
   roomId: string,
+  userId: string,
   room: RoomData,
   winningDate: RoomOptionRecord | undefined,
   winningLocation: RoomOptionRecord | undefined,
@@ -661,7 +687,38 @@ async function createCalendarEventForRoom(
   attendees: string[],
   tools: ActionTools,
 ): Promise<CalendarEventOutcome> {
-  if (room.calendarEventStatus === 'created') return { calendarEventCreated: true }
+  const statusResult = await tools.query<RoomCalendarEventData>('roomCalendarEvents', {
+    where: { roomId, ownerId: userId },
+    limit: 10,
+  })
+  if (!statusResult.success) {
+    return {
+      calendarEventCreated: false,
+      warning: `Could not check your Google Calendar event status: ${statusResult.error}`,
+    }
+  }
+  if (statusResult.data.count > statusResult.data.records.length) {
+    return {
+      calendarEventCreated: false,
+      warning: 'Could not check your Google Calendar event status because too many records were found.',
+    }
+  }
+  if (statusResult.data.records.some((record) => record.data.status === 'created')) {
+    return { calendarEventCreated: true }
+  }
+  if (userId === room.ownerId && room.calendarEventStatus === 'created') {
+    const statusWarning = await saveCalendarEventStatus(
+      tools,
+      roomId,
+      userId,
+      'created',
+      room.calendarEventCreatedAt,
+    )
+    return {
+      calendarEventCreated: true,
+      ...(statusWarning ? { warning: statusWarning } : {}),
+    }
+  }
 
   const chosenEvent = rankSnapshotEventVotes(roomId, eventSnapshot, votes)[0]
   const chosenLocation = chosenEvent
@@ -677,7 +734,7 @@ async function createCalendarEventForRoom(
   const end = start ? nextAllDayEventDate(start) : null
   if (!start || !end || !chosenLocation) {
     const warning = 'Google Calendar event was not created because the winning date or location is unavailable.'
-    const statusWarning = await saveCalendarEventStatus(tools, roomId, 'failed')
+    const statusWarning = await saveCalendarEventStatus(tools, roomId, userId, 'failed')
     return {
       calendarEventCreated: false,
       warning: [warning, statusWarning].filter(Boolean).join(' '),
@@ -708,7 +765,7 @@ async function createCalendarEventForRoom(
   try {
     const result = await tools.integration<unknown>('google/calendar-create-event', request)
     if (!result.success) {
-      const statusWarning = await saveCalendarEventStatus(tools, roomId, 'failed')
+      const statusWarning = await saveCalendarEventStatus(tools, roomId, userId, 'failed')
       return {
         calendarEventCreated: false,
         warning: [
@@ -720,7 +777,7 @@ async function createCalendarEventForRoom(
 
     if (isObject(result.data) && result.data.requiresOAuth === true) {
       const authUrl = typeof result.data.authUrl === 'string' ? result.data.authUrl : undefined
-      const statusWarning = await saveCalendarEventStatus(tools, roomId, 'needs_auth')
+      const statusWarning = await saveCalendarEventStatus(tools, roomId, userId, 'needs_auth')
       return {
         calendarEventCreated: false,
         ...(authUrl ? { calendarAuthUrl: authUrl } : {}),
@@ -736,6 +793,7 @@ async function createCalendarEventForRoom(
     const statusWarning = await saveCalendarEventStatus(
       tools,
       roomId,
+      userId,
       'created',
       new Date().toISOString(),
     )
@@ -746,7 +804,7 @@ async function createCalendarEventForRoom(
         : {}),
     }
   } catch (error) {
-    const statusWarning = await saveCalendarEventStatus(tools, roomId, 'failed')
+    const statusWarning = await saveCalendarEventStatus(tools, roomId, userId, 'failed')
     return {
       calendarEventCreated: false,
       warning: [
@@ -1373,6 +1431,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     const calendarOutcome = await createCalendarEventForRoom(
       roomId,
+      userId,
       room,
       winningDate,
       winningLocation,
@@ -1506,15 +1565,8 @@ export const actions: Record<string, ActionHandler<Env>> = {
     const roomResult = await tools.get<RoomData>('rooms', roomId)
     if (!roomResult.success) return failure('Room not found.')
     const room = roomResult.data.record.data
-    if (room.ownerId !== userId) return failure('Only the room host can add its calendar event.')
     if (room.status !== 'closed') {
       return failure('The room must be closed before adding its calendar event.')
-    }
-    if (room.calendarEventStatus === 'created') {
-      return {
-        success: true as const,
-        data: { calendarEventCreated: true } satisfies CalendarEventOutcome,
-      }
     }
 
     const [locationsResult, datesResult, votesResult, usersResult] = await Promise.all([
@@ -1535,6 +1587,9 @@ export const actions: Record<string, ActionHandler<Env>> = {
     ) {
       return failure('Could not load all room records needed for the calendar event.')
     }
+    if (!usersResult.data.records.some((member) => member.recordId === userId)) {
+      return failure('Only app members can add this room event to Google Calendar.')
+    }
 
     const locations = [...locationsResult.data.records].sort((left, right) =>
       left.createdAt.localeCompare(right.createdAt),
@@ -1545,28 +1600,16 @@ export const actions: Record<string, ActionHandler<Env>> = {
       locations,
       votesResult.data.records,
     )[0]?.option
-    const participantIds = new Set([
-      room.ownerId,
-      ...datesResult.data.records.map((date) => date.data.addedBy),
-      ...locations.map((location) => location.data.addedBy),
-      ...votesResult.data.records.map((vote) => vote.data.userId),
-    ])
-    const attendees = [...new Map(
-      usersResult.data.records
-        .filter((member) => participantIds.has(member.recordId))
-        .map((member) => requiredString(member.data.email))
-        .filter((email): email is string => email !== null)
-        .map((email) => [email.toLowerCase(), email]),
-    ).values()]
     const outcome = await createCalendarEventForRoom(
       roomId,
+      userId,
       room,
       winningDate,
       winningLocation,
       locations,
       Array.isArray(room.eventSnapshot) ? room.eventSnapshot : [],
       votesResult.data.records,
-      attendees,
+      [],
       tools,
     )
     return { success: true as const, data: outcome }

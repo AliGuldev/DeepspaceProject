@@ -35,7 +35,12 @@ interface Room {
   status: 'open' | 'closed'
   ownerId: string
   eventSnapshot?: unknown
-  calendarEventStatus?: 'created' | 'needs_auth' | 'failed'
+}
+
+interface RoomCalendarEvent {
+  roomId: string
+  ownerId: string
+  status: 'created' | 'needs_auth' | 'failed'
 }
 
 interface Candidate {
@@ -328,8 +333,13 @@ function LocationModal({ isOpen, onClose, onAdd, onUseCurrentLocation }: Locatio
           </div>
         </div>
       </Modal.Body>
-      <Modal.Footer>
-        <Button variant="secondary" onClick={onClose} disabled={saving}>
+      <Modal.Footer className="w-full min-w-0 sm:flex-wrap sm:gap-2 sm:space-x-0">
+        <Button
+          variant="secondary"
+          className="mr-auto"
+          onClick={onClose}
+          disabled={saving}
+        >
           Cancel
         </Button>
         <Button
@@ -625,17 +635,30 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const { records: votes, status: votesStatus } = useQuery<Vote>('votes', {
     where: { roomId },
   })
+  const { records: calendarEvents, status: calendarEventsStatus } =
+    useQuery<RoomCalendarEvent>('roomCalendarEvents', {
+      where: { roomId, ownerId: user?.id ?? '' },
+    })
   const locationIds = new Set(locations.map((location) => location.recordId))
   const hasLocationVote = votes.some((vote) => locationIds.has(vote.data.optionId))
 
   const room = rooms.find((candidate) => candidate.recordId === roomId)
+  const myCalendarEvent = calendarEvents.find(
+    (calendarEvent) => calendarEvent.data.ownerId === user?.id,
+  )
   const roomStatus = room?.data.status
   const isOpen = roomStatus === 'open'
   const hasEventSnapshot = Array.isArray(room?.data.eventSnapshot)
   const isLoading =
-    roomsStatus === 'loading' || optionsStatus === 'loading' || votesStatus === 'loading'
+    roomsStatus === 'loading' ||
+    optionsStatus === 'loading' ||
+    votesStatus === 'loading' ||
+    calendarEventsStatus === 'loading'
   const hasError =
-    roomsStatus === 'error' || optionsStatus === 'error' || votesStatus === 'error'
+    roomsStatus === 'error' ||
+    optionsStatus === 'error' ||
+    votesStatus === 'error' ||
+    calendarEventsStatus === 'error'
 
   const members = useMemo(() => {
     const byId = new Map<string, RoomUser>(roomMembers.map((member) => [member.id, member]))
@@ -924,39 +947,38 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
           <EmptyState title="Room not found" description="It may have been removed." />
         ) : (
           <div className="space-y-8">
-            {!isOpen && room.data.ownerId === user?.id &&
-              room.data.calendarEventStatus !== 'created' && (
-                <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card/60 p-4">
-                  <div>
-                    <h2 className="font-medium text-foreground">Google Calendar</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {room.data.calendarEventStatus === 'needs_auth'
-                        ? 'Connect Google Calendar, then retry creating the room event.'
-                        : 'The room event has not been added to Google Calendar yet.'}
-                    </p>
-                    {calendarAuthUrl && (
-                      <a
-                        href={calendarAuthUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-2 inline-block text-sm underline"
-                      >
-                        Connect Google Calendar
-                      </a>
-                    )}
-                  </div>
-                  <Button
-                    variant="secondary"
-                    onClick={() => void handleCreateCalendarEvent()}
-                    loading={calendarRetrying}
-                    disabled={calendarRetrying}
-                  >
-                    {room.data.calendarEventStatus === 'needs_auth'
-                      ? 'Retry calendar event'
-                      : 'Add to Google Calendar'}
-                  </Button>
-                </section>
-              )}
+            {!isOpen && user && myCalendarEvent?.data.status !== 'created' && (
+              <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card/60 p-4">
+                <div>
+                  <h2 className="font-medium text-foreground">Google Calendar</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {myCalendarEvent?.data.status === 'needs_auth'
+                      ? 'Connect Google Calendar, then retry creating the room event.'
+                      : 'Add this room event to your Google Calendar.'}
+                  </p>
+                  {calendarAuthUrl && (
+                    <a
+                      href={calendarAuthUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-block text-sm underline"
+                    >
+                      Connect Google Calendar
+                    </a>
+                  )}
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => void handleCreateCalendarEvent()}
+                  loading={calendarRetrying}
+                  disabled={calendarRetrying}
+                >
+                  {myCalendarEvent?.data.status === 'needs_auth'
+                    ? 'Retry calendar event'
+                    : 'Add to my Google Calendar'}
+                </Button>
+              </section>
+            )}
             <section className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>

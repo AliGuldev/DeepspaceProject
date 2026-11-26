@@ -95,6 +95,7 @@ function makeTools(fixture: Fixture) {
       envelope(recordId, { roomId: 'room', optionId, userId, value }),
     ),
     eventSearches: [],
+    roomCalendarEvents: [],
   }
 
   const tools: ActionTools = {
@@ -102,6 +103,11 @@ function makeTools(fixture: Fixture) {
       created.push({ collection, data })
       if (collection === 'eventSearches') {
         records.eventSearches.push(envelope(`event-cache-${records.eventSearches.length}`, data))
+      }
+      if (collection === 'roomCalendarEvents') {
+        records.roomCalendarEvents.push(
+          envelope(`calendar-status-${records.roomCalendarEvents.length}`, data),
+        )
       }
       return { success: true, data: { recordId: 'created' } }
     },
@@ -112,6 +118,8 @@ function makeTools(fixture: Fixture) {
     ) {
       updated.push({ collection, recordId, data })
       if (collection === 'rooms') Object.assign(roomData, data)
+      const record = (records[collection] ?? []).find((item) => item.recordId === recordId)
+      if (record) Object.assign(record.data, data)
       return { success: true, data: { recordId: 'updated' } }
     },
     async remove() {
@@ -1143,7 +1151,7 @@ describe('room date stage', () => {
   })
 
   it('emails room participants the ranked voting results when the host closes the room', async () => {
-    const { tools, updated, integrationCalls } = makeTools({
+    const { tools, created, updated, integrationCalls } = makeTools({
       members: ['u1', 'u2', 'u3'],
       dates: [
         { recordId: 'date-1', addedBy: 'u1' },
@@ -1254,12 +1262,15 @@ describe('room date stage', () => {
           sendUpdates: 'all',
         },
       })
-    expect(updated.some(
-      (entry) =>
-        entry.collection === 'rooms' &&
-        entry.data.calendarEventStatus === 'created' &&
-        typeof entry.data.calendarEventCreatedAt === 'string',
-    )).toBe(true)
+    expect(created.find((entry) => entry.collection === 'roomCalendarEvents'))
+      .toMatchObject({
+        data: {
+          roomId: 'room',
+          ownerId: 'u1',
+          status: 'created',
+          calendarEventCreatedAt: expect.any(String),
+        },
+      })
   })
 
   it('uses the winning room date and location when no event has votes', async () => {
@@ -1304,7 +1315,7 @@ describe('room date stage', () => {
       eventIntegrationError: true,
       calendarRequiresOAuth: true,
     }
-    const { tools, integrationCalls, updated } = makeTools(fixture)
+    const { tools, integrationCalls, created } = makeTools(fixture)
 
     const closed = await actions.closeRoom(context(tools, { roomId: 'room' }, ''))
 
@@ -1315,21 +1326,16 @@ describe('room date stage', () => {
         calendarAuthUrl: 'https://accounts.google.test/authorize',
       },
     })
-    expect(updated.some(
-      (entry) =>
-        entry.collection === 'rooms' &&
-        entry.data.calendarEventStatus === 'needs_auth',
-    )).toBe(true)
-
-    const nonHostContext = context(tools, { roomId: 'room' }, '')
-    nonHostContext.userId = 'u2'
-    const deniedRetry = await actions.createRoomCalendarEvent(nonHostContext)
-    expect(deniedRetry).toMatchObject({
-      success: false,
-      error: 'Only the room host can add its calendar event.',
-    })
+    expect(created.find((entry) => entry.collection === 'roomCalendarEvents'))
+      .toMatchObject({
+        data: { ownerId: 'u1', status: 'needs_auth' },
+      })
 
     fixture.calendarRequiresOAuth = false
+    const otherMemberContext = context(tools, { roomId: 'room' }, '')
+    otherMemberContext.userId = 'u2'
+    const otherMemberResult = await actions.createRoomCalendarEvent(otherMemberContext)
+    const otherMemberDuplicate = await actions.createRoomCalendarEvent(otherMemberContext)
     const retried = await actions.createRoomCalendarEvent(
       context(tools, { roomId: 'room' }, ''),
     )
@@ -1337,6 +1343,14 @@ describe('room date stage', () => {
       context(tools, { roomId: 'room' }, ''),
     )
 
+    expect(otherMemberResult).toMatchObject({
+      success: true,
+      data: { calendarEventCreated: true },
+    })
+    expect(otherMemberDuplicate).toMatchObject({
+      success: true,
+      data: { calendarEventCreated: true },
+    })
     expect(retried).toMatchObject({
       success: true,
       data: { calendarEventCreated: true },
@@ -1345,13 +1359,18 @@ describe('room date stage', () => {
       success: true,
       data: { calendarEventCreated: true },
     })
-    expect(integrationCalls.filter((call) => call.endpoint === 'google/calendar-create-event'))
-      .toHaveLength(2)
-    expect(updated.some(
-      (entry) =>
-        entry.collection === 'rooms' &&
-        entry.data.calendarEventStatus === 'created',
-    )).toBe(true)
+    const calendarCalls = integrationCalls.filter(
+      (call) => call.endpoint === 'google/calendar-create-event',
+    )
+    expect(calendarCalls).toHaveLength(3)
+    expect(calendarCalls[1]).toMatchObject({
+      data: { attendees: [], sendUpdates: 'none' },
+    })
+    expect(created.filter((entry) => entry.collection === 'roomCalendarEvents'))
+      .toMatchObject([
+        { data: { ownerId: 'u1', status: 'created' } },
+        { data: { ownerId: 'u2', status: 'created' } },
+      ])
   })
 
   it('reports an email failure after successfully closing the room', async () => {
