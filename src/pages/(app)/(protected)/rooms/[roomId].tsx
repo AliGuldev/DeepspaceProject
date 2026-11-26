@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { getAuthToken, useQuery, useUser, useUsers, type RoomUser } from 'deepspace'
+import { useQuery, useUser, useUsers, type RoomUser } from 'deepspace'
 import {
   ArrowLeft,
   ChevronDown,
@@ -25,6 +25,8 @@ import {
   useToast,
   ConfirmModal,
 } from '@/components/ui'
+import { callAction } from '@/lib/action-client'
+import { getEventVoteOptionId, type EventVoteTarget } from '@/lib/event-votes'
 import { PLACE_TYPES, type PlaceType } from '@/schemas/options-schema'
 
 interface Room {
@@ -32,6 +34,8 @@ interface Room {
   description?: string
   status: 'open' | 'closed'
   ownerId: string
+  eventSnapshot?: unknown
+  calendarEventStatus?: 'created' | 'needs_auth' | 'failed'
 }
 
 interface Candidate {
@@ -84,7 +88,29 @@ interface RoomWeather {
   events: LocationEventResult[]
 }
 
-function EventCards({ events }: { events: RoomEvent[] }) {
+interface VoteTotals {
+  approvals: number
+  vetoes: number
+  myVote?: number
+}
+
+function EventCards({
+  events,
+  roomId,
+  locationId,
+  allowVoting,
+  voteTotals,
+  pendingVote,
+  onVote,
+}: {
+  events: RoomEvent[]
+  roomId: string
+  locationId: string
+  allowVoting: boolean
+  voteTotals: Map<string, VoteTotals>
+  pendingVote: { optionId: string; value: 1 | -1 } | null
+  onVote: (event: EventVoteTarget, value: 1 | -1) => void
+}) {
   return (
     <ul className="mt-3 space-y-3">
       {events.map((event, index) => {
@@ -92,6 +118,9 @@ function EventCards({ events }: { events: RoomEvent[] }) {
           ?.replace(/\s*\bDATE\W{0,4}\s*unknown\b[.,;:]?/gi, '')
           .replace(/\s{2,}/g, ' ')
           .trim()
+        const eventTarget = { locationId, ...event }
+        const optionId = getEventVoteOptionId(roomId, eventTarget)
+        const totals = voteTotals.get(optionId)
 
         return (
           <li key={`${event.title}-${index}`} className="text-sm">
@@ -105,6 +134,38 @@ function EventCards({ events }: { events: RoomEvent[] }) {
             {summary && (
               <p className="mt-1 text-muted-foreground">{summary}</p>
             )}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {allowVoting ? (
+                <>
+                  <Button
+                    variant={totals?.myVote === 1 ? 'default' : 'secondary'}
+                    size="sm"
+                    onClick={() => onVote(eventTarget, 1)}
+                    loading={pendingVote?.optionId === optionId && pendingVote.value === 1}
+                    disabled={pendingVote !== null}
+                    aria-label={`Approve ${event.title}`}
+                  >
+                    {pendingVote?.optionId !== optionId && <ThumbsUp aria-hidden="true" />}
+                    Approve ({totals?.approvals ?? 0})
+                  </Button>
+                  <Button
+                    variant={totals?.myVote === -1 ? 'default' : 'secondary'}
+                    size="sm"
+                    onClick={() => onVote(eventTarget, -1)}
+                    loading={pendingVote?.optionId === optionId && pendingVote.value === -1}
+                    disabled={pendingVote !== null}
+                    aria-label={`Veto ${event.title}`}
+                  >
+                    {pendingVote?.optionId !== optionId && <ThumbsDown aria-hidden="true" />}
+                    Veto ({totals?.vetoes ?? 0})
+                  </Button>
+                </>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  {totals?.approvals ?? 0} approvals | {totals?.vetoes ?? 0} vetoes
+                </span>
+              )}
+            </div>
           </li>
         )
       })}
@@ -159,7 +220,7 @@ function DateModal({ isOpen, initialDate, onClose, onAdd }: DateModalProps) {
     <Modal open={isOpen} onClose={saving ? () => undefined : onClose} size="sm">
       <Modal.Header>
         <Modal.Title>{initialDate ? 'Update your date' : 'Add your date'}</Modal.Title>
-        <Modal.Description>Each member adds one date for the group to consider.</Modal.Description>
+        <Modal.Description>Members can each add one date for the group to consider.</Modal.Description>
       </Modal.Header>
       <Modal.Body>
         <Label htmlFor="room-date" className="mb-2 block">
@@ -294,6 +355,7 @@ function LocationModal({ isOpen, onClose, onAdd, onUseCurrentLocation }: Locatio
 
 interface CandidateCardProps {
   candidate: CandidateRecord
+  roomId: string
   approvals: number
   vetoes: number
   myVote: number | undefined
@@ -305,14 +367,18 @@ interface CandidateCardProps {
   weatherLoading?: boolean
   events?: LocationEventResult
   eventsLoading?: boolean
+  eventVoteTotals: Map<string, VoteTotals>
+  pendingVote: { optionId: string; value: 1 | -1 } | null
   votingValue?: 1 | -1
   onVote: (value: 1 | -1) => void
+  onEventVote: (event: EventVoteTarget, value: 1 | -1) => void
   onDelete?: () => void
   onRetryEvents?: () => void
 }
 
 function CandidateCard({
   candidate,
+  roomId,
   approvals,
   vetoes,
   myVote,
@@ -324,8 +390,11 @@ function CandidateCard({
   weatherLoading,
   events,
   eventsLoading,
+  eventVoteTotals,
+  pendingVote,
   votingValue,
   onVote,
+  onEventVote,
   onDelete,
   onRetryEvents,
 }: CandidateCardProps) {
@@ -469,7 +538,15 @@ function CandidateCard({
               ) : events ? (
                 <>
                   {events.events.length > 0 ? (
-                    <EventCards events={events.events} />
+                    <EventCards
+                      events={events.events}
+                      roomId={roomId}
+                      locationId={candidate.recordId}
+                      allowVoting={allowVoting}
+                      voteTotals={eventVoteTotals}
+                      pendingVote={pendingVote}
+                      onVote={onEventVote}
+                    />
                   ) : (
                     <p className="mt-1 text-sm text-muted-foreground">No events matched this location.</p>
                   )}
@@ -488,32 +565,6 @@ function CandidateCard({
       </div>
     </article>
   )
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-async function callAction<T = unknown>(name: string, params: Record<string, unknown>): Promise<T> {
-  const token = await getAuthToken()
-  if (!token) throw new Error('Sign in and try again.')
-
-  const response = await fetch(`/api/actions/${name}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(params),
-  })
-  const payload: unknown = await response.json()
-  if (!response.ok || !isObject(payload) || payload.success !== true) {
-    const message = isObject(payload) && typeof payload.error === 'string'
-      ? payload.error
-      : 'Please try again.'
-    throw new Error(message)
-  }
-  return payload.data as T
 }
 
 function getCurrentCoordinates(): Promise<{ latitude: number; longitude: number }> {
@@ -557,6 +608,8 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [weatherRetry, setWeatherRetry] = useState(0)
   const [closingRoom, setClosingRoom] = useState(false)
+  const [calendarRetrying, setCalendarRetrying] = useState(false)
+  const [calendarAuthUrl, setCalendarAuthUrl] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<CandidateRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
@@ -576,7 +629,9 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const hasLocationVote = votes.some((vote) => locationIds.has(vote.data.optionId))
 
   const room = rooms.find((candidate) => candidate.recordId === roomId)
-  const isOpen = room?.data.status === 'open'
+  const roomStatus = room?.data.status
+  const isOpen = roomStatus === 'open'
+  const hasEventSnapshot = Array.isArray(room?.data.eventSnapshot)
   const isLoading =
     roomsStatus === 'loading' || optionsStatus === 'loading' || votesStatus === 'loading'
   const hasError =
@@ -591,7 +646,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   }, [roomMembers, user])
 
   const voteTotals = useMemo(() => {
-    const totals = new Map<string, { approvals: number; vetoes: number; myVote?: number }>()
+    const totals = new Map<string, VoteTotals>()
     votes.forEach((vote) => {
       const total = totals.get(vote.data.optionId) ?? { approvals: 0, vetoes: 0 }
       if (vote.data.value === 1) total.approvals += 1
@@ -601,19 +656,12 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     })
     return totals
   }, [votes, user?.id])
-  const dateSubmitters = useMemo(
-    () => new Set(dates.map((date) => date.data.addedBy)),
-    [dates],
-  )
   const dateIds = useMemo(() => new Set(dates.map((date) => date.recordId)), [dates])
   const dateVotes = useMemo(
     () => votes.filter((vote) => dateIds.has(vote.data.optionId)),
     [dateIds, votes],
   )
-  const membersSubmittedDates =
-    usersLoaded && members.length > 0 && members.every((member) => dateSubmitters.has(member.id))
-  const hasVotedDate = dateVotes.length > 0
-  const dateStageComplete = membersSubmittedDates && hasVotedDate
+  const dateStageComplete = dateVotes.length >= 2
   const myDate = dates.find((date) => date.data.addedBy === user?.id)
   const locationSignature = locations.map((location) => location.recordId).join(',')
   const dateVoteSignature = dateVotes
@@ -651,7 +699,15 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     return () => {
       active = false
     }
-  }, [dateStageComplete, dateVoteSignature, locationSignature, roomId, weatherRetry])
+  }, [
+    dateStageComplete,
+    dateVoteSignature,
+    hasEventSnapshot,
+    locationSignature,
+    roomStatus,
+    roomId,
+    weatherRetry,
+  ])
 
   const weatherByLocationId = useMemo(
     () => new Map(weatherData?.locations?.map((item) => [item.locationId, item]) ?? []),
@@ -714,9 +770,29 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
 
     setClosingRoom(true)
     try {
-      await callAction('closeRoom', { roomId })
+      const result = await callAction<{
+        emailSent: boolean
+        calendarEventCreated: boolean
+        calendarAuthUrl?: string
+        warning?: string
+      }>(
+        'closeRoom',
+        { roomId },
+      )
       setShowCloseRoomConfirmation(false)
-      toast.success('Room closed', 'Voting is now complete.')
+      setCalendarAuthUrl(result.calendarAuthUrl ?? null)
+      setWeatherRetry((value) => value + 1)
+      if (result.warning) {
+        toast.error('Room closed with an issue', result.warning)
+      } else {
+        toast.success(
+          'Room closed',
+          [
+            result.emailSent ? 'Voting results were emailed to room participants.' : undefined,
+            result.calendarEventCreated ? 'A Google Calendar event was created.' : undefined,
+          ].filter(Boolean).join(' ') || 'The room is closed.',
+        )
+      }
     } catch (error) {
       toast.error(
         'Could not close room',
@@ -724,6 +800,32 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
       )
     } finally {
       setClosingRoom(false)
+    }
+  }
+
+  const handleCreateCalendarEvent = async () => {
+    if (calendarRetrying || !room) return
+
+    setCalendarRetrying(true)
+    try {
+      const result = await callAction<{
+        calendarEventCreated: boolean
+        calendarAuthUrl?: string
+        warning?: string
+      }>('createRoomCalendarEvent', { roomId })
+      setCalendarAuthUrl(result.calendarAuthUrl ?? null)
+      if (result.warning) {
+        toast.error('Google Calendar needs attention', result.warning)
+      } else if (result.calendarEventCreated) {
+        toast.success('Calendar event created', 'The room event was added to Google Calendar.')
+      }
+    } catch (error) {
+      toast.error(
+        'Could not create calendar event',
+        error instanceof Error ? error.message : 'Please try again.',
+      )
+    } finally {
+      setCalendarRetrying(false)
     }
   }
 
@@ -745,12 +847,21 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     }
   }
 
-  const handleVote = async (optionId: string, value: 1 | -1) => {
+  const handleVote = async (
+    optionId: string,
+    value: 1 | -1,
+    event?: EventVoteTarget,
+  ) => {
     if (pendingVote || !isOpen) return
 
     setPendingVote({ optionId, value })
     try {
-      await callAction('castRoomVote', { roomId, optionId, value })
+      await callAction('castRoomVote', {
+        roomId,
+        optionId,
+        value,
+        ...(event ? { event } : {}),
+      })
       toast.success('Vote saved', value === 1 ? 'Your approval was recorded.' : 'Your veto was recorded.')
     } catch (error) {
       toast.error('Could not save vote', error instanceof Error ? error.message : 'Please try again.')
@@ -813,13 +924,46 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
           <EmptyState title="Room not found" description="It may have been removed." />
         ) : (
           <div className="space-y-8">
+            {!isOpen && room.data.ownerId === user?.id &&
+              room.data.calendarEventStatus !== 'created' && (
+                <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card/60 p-4">
+                  <div>
+                    <h2 className="font-medium text-foreground">Google Calendar</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {room.data.calendarEventStatus === 'needs_auth'
+                        ? 'Connect Google Calendar, then retry creating the room event.'
+                        : 'The room event has not been added to Google Calendar yet.'}
+                    </p>
+                    {calendarAuthUrl && (
+                      <a
+                        href={calendarAuthUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block text-sm underline"
+                      >
+                        Connect Google Calendar
+                      </a>
+                    )}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => void handleCreateCalendarEvent()}
+                    loading={calendarRetrying}
+                    disabled={calendarRetrying}
+                  >
+                    {room.data.calendarEventStatus === 'needs_auth'
+                      ? 'Retry calendar event'
+                      : 'Add to Google Calendar'}
+                  </Button>
+                </section>
+              )}
             <section className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-foreground">1. Choose a date</h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Every member adds one date. Locations unlock after everyone has added a date
-                    and at least one date has a vote.
+                    Members can add one date each. Locations unlock after at least two votes are
+                    cast on dates; not everyone needs to add a date.
                   </p>
                 </div>
                 {isOpen && !dateStageComplete && (
@@ -838,7 +982,6 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                 ) : (
                   <ul className="space-y-3">
                     {members.map((member) => {
-                      const hasDate = dateSubmitters.has(member.id)
                       const hasVoted = dateVotes.some((vote) => vote.data.userId === member.id)
                       return (
                         <li
@@ -847,9 +990,6 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                         >
                           <span className="font-medium text-foreground">{member.name}</span>
                           <span className="flex flex-wrap gap-2">
-                            <Badge variant={hasDate ? 'success' : 'warning'} size="sm">
-                              {hasDate ? 'Date added' : 'Needs date'}
-                            </Badge>
                             <Badge variant={hasVoted ? 'success' : 'warning'} size="sm">
                               {hasVoted ? 'Voted' : 'Needs to vote'}
                             </Badge>
@@ -874,6 +1014,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                       <CandidateCard
                         key={date.recordId}
                         candidate={date}
+                        roomId={roomId}
                         approvals={totals?.approvals ?? 0}
                         vetoes={totals?.vetoes ?? 0}
                         myVote={totals?.myVote}
@@ -881,10 +1022,15 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                         allowVoting={isOpen}
                         isSelected={weatherData?.selectedDateId === date.recordId}
                         isVoting={pendingVote?.optionId === date.recordId}
+                        eventVoteTotals={voteTotals}
+                        pendingVote={pendingVote}
                         votingValue={
                           pendingVote?.optionId === date.recordId ? pendingVote.value : undefined
                         }
                         onVote={(value) => void handleVote(date.recordId, value)}
+                        onEventVote={(event, value) =>
+                          void handleVote(getEventVoteOptionId(roomId, event), value, event)
+                        }
                       />
                     )
                   })}
@@ -897,8 +1043,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                 <h2 className="text-xl font-semibold text-foreground">2. Choose a location</h2>
                 {!dateStageComplete && (
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Locations unlock when every member has added a date and at least one date has
-                    been voted on.
+                    Locations unlock after at least two votes are cast on dates.
                   </p>
                 )}
                 {weatherData && (
@@ -911,7 +1056,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
 
               {!dateStageComplete ? (
                 <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                  Waiting for the date stage to finish.
+                  Waiting for at least two date votes.
                 </div>
               ) : (
                 <>
@@ -936,6 +1081,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                           <CandidateCard
                             key={location.recordId}
                             candidate={location}
+                            roomId={roomId}
                             approvals={totals?.approvals ?? 0}
                             vetoes={totals?.vetoes ?? 0}
                             myVote={totals?.myVote}
@@ -946,12 +1092,17 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                             weatherLoading={weatherLoading}
                             events={eventsByLocationId.get(location.recordId)}
                             eventsLoading={weatherLoading && locations.length >= 2}
+                            eventVoteTotals={voteTotals}
+                            pendingVote={pendingVote}
                             votingValue={
                               pendingVote?.optionId === location.recordId
                                 ? pendingVote.value
                                 : undefined
                             }
                             onVote={(value) => void handleVote(location.recordId, value)}
+                            onEventVote={(event, value) =>
+                              void handleVote(getEventVoteOptionId(roomId, event), value, event)
+                            }
                             onDelete={() => setDeleteTarget(location)}
                             onRetryEvents={() => setWeatherRetry((retry) => retry + 1)}
                           />

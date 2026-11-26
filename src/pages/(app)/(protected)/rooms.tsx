@@ -13,6 +13,7 @@ import {
   Textarea,
   useToast,
 } from '@/components/ui'
+import { callAction } from '@/lib/action-client'
 
 const ROOM_STATUS = {
   OPEN: 'open',
@@ -272,8 +273,27 @@ export default function RoomsPage({ className }: RoomsPageProps) {
 
     setUpdatingId(room.recordId)
     try {
-      await putConfirmed(room.recordId, { status: ROOM_STATUS.CLOSED })
-      toast.success('Room closed', `"${room.data.title}" is now closed.`)
+      const result = await callAction<{
+        emailSent: boolean
+        calendarEventCreated: boolean
+        warning?: string
+      }>(
+        'closeRoom',
+        { roomId: room.recordId },
+      )
+      if (result.warning) {
+        toast.error('Room closed with an issue', result.warning)
+      } else {
+        toast.success(
+          'Room closed',
+          [
+            result.emailSent
+              ? `"${room.data.title}" is closed and the voting results were emailed.`
+              : `"${room.data.title}" is now closed.`,
+            result.calendarEventCreated ? 'A Google Calendar event was created.' : undefined,
+          ].filter(Boolean).join(' '),
+        )
+      }
     } catch (error) {
       toast.error(
         'Could not close room',

@@ -5,6 +5,13 @@ export const roomsSchema: CollectionSchema = {
   columns: [
     { name: 'title', storage: 'text', interpretation: 'plain', required: true },
     { name: 'description', storage: 'text', interpretation: 'plain' },
+    { name: 'eventSnapshot', storage: 'text', interpretation: { kind: 'json' } },
+    {
+      name: 'calendarEventStatus',
+      storage: 'text',
+      interpretation: { kind: 'select', options: ['created', 'needs_auth', 'failed'] },
+    },
+    { name: 'calendarEventCreatedAt', storage: 'text', interpretation: 'plain' },
     {
       name: 'status',
       storage: 'text',
