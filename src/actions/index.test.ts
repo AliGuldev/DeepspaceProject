@@ -331,6 +331,52 @@ describe('room date stage', () => {
     })
   })
 
+  it('reverse geocodes and adds the browser location', async () => {
+    const { tools, created } = makeTools({
+      members: ['u1', 'u2'],
+      dates: [
+        { recordId: 'date-1', addedBy: 'u1' },
+        { recordId: 'date-2', addedBy: 'u2' },
+      ],
+      votes: [{ recordId: 'vote-1', optionId: 'date-1', userId: 'u1', value: 1 }],
+    })
+    let reverseRequest: URL | undefined
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      reverseRequest = new URL(input.toString())
+      return new Response(
+        JSON.stringify({
+          results: [{
+            city: 'Boston',
+            state: 'Massachusetts',
+            country: 'United States',
+          }],
+        }),
+        { status: 200 },
+      )
+    })
+
+    try {
+      const result = await actions.addRoomLocation(
+        context(tools, { roomId: 'room', latitude: 42.36, longitude: -71.06 }),
+      )
+
+      expect(result).toMatchObject({ success: true })
+      expect(reverseRequest?.hostname).toBe('api.geoapify.com')
+      expect(reverseRequest?.pathname).toBe('/v1/geocode/reverse')
+      expect(reverseRequest?.searchParams.get('lat')).toBe('42.36')
+      expect(reverseRequest?.searchParams.get('lon')).toBe('-71.06')
+      expect(created[0]).toMatchObject({
+        collection: 'options',
+        data: {
+          kind: 'location',
+          title: 'Boston, Massachusetts, United States',
+        },
+      })
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
   it('does not allow location votes before the date stage is complete', async () => {
     const { tools } = makeTools({
       members: ['u1', 'u2'],

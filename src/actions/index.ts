@@ -63,6 +63,56 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function isCoordinate(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
+}
+
+async function reverseGeocodeLocation(
+  latitude: number,
+  longitude: number,
+  apiKey: string | undefined,
+): Promise<{ title: string } | { error: string }> {
+  if (!apiKey) return { error: 'Geoapify API key is not configured.' }
+
+  try {
+    const url = new URL('https://api.geoapify.com/v1/geocode/reverse')
+    url.searchParams.set('lat', String(latitude))
+    url.searchParams.set('lon', String(longitude))
+    url.searchParams.set('format', 'json')
+    url.searchParams.set('apiKey', apiKey)
+
+    const response = await fetch(url)
+    if (!response.ok) return { error: `Geocoding failed (HTTP ${response.status}).` }
+    const payload: unknown = await response.json()
+    if (!isObject(payload) || !Array.isArray(payload.results)) {
+      return { error: 'Geocoding returned an invalid response.' }
+    }
+
+    const result = payload.results[0]
+    if (!isObject(result)) return { error: 'No matching place was found for your location.' }
+
+    const name =
+      typeof result.city === 'string'
+        ? result.city
+        : typeof result.name === 'string'
+          ? result.name
+          : result.address_line1
+    if (typeof name !== 'string' || !name.trim()) {
+      return { error: 'Could not determine a place name for your location.' }
+    }
+
+    return {
+      title: [name, result.state, result.country]
+        .filter((part): part is string => typeof part === 'string' && Boolean(part.trim()))
+        .join(', '),
+    }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : 'Geocoding could not be completed.',
+    }
+  }
+}
+
 export function chooseWinningDate(
   dates: Array<{ recordId: string; createdAt: string }>,
   votes: Array<{ data: Pick<VoteData, 'optionId' | 'value'> }>,
@@ -319,10 +369,14 @@ export const actions: Record<string, ActionHandler<Env>> = {
         })
   },
 
-  addRoomLocation: async ({ userId, params, tools }) => {
+  addRoomLocation: async ({ userId, params, tools, env }) => {
     const roomId = requiredString(params.roomId)
-    const title = requiredString(params.title)
-    if (!roomId || !title) return failure('Room and location are required.')
+    let title = requiredString(params.title)
+    const latitude = params.latitude
+    const longitude = params.longitude
+    const hasCoordinates =
+      isCoordinate(latitude, -90, 90) && isCoordinate(longitude, -180, 180)
+    if (!roomId || (!title && !hasCoordinates)) return failure('Room and location are required.')
 
     const roomResult = await tools.get<RoomData>('rooms', roomId)
     if (!roomResult.success) return failure('Room not found.')
@@ -334,6 +388,15 @@ export const actions: Record<string, ActionHandler<Env>> = {
     if ('error' in dateStage) return failure(dateStage.error)
     if (!dateStage.complete) {
       return failure('Every member must add a date and at least one date must be voted on first.')
+    }
+
+    if (!title) {
+      if (!isCoordinate(latitude, -90, 90) || !isCoordinate(longitude, -180, 180)) {
+        return failure('A valid latitude and longitude are required.')
+      }
+      const location = await reverseGeocodeLocation(latitude, longitude, env.GEOAPIFY_API_KEY)
+      if ('error' in location) return failure(location.error)
+      title = location.title
     }
 
     return tools.create<OptionData>('options', {

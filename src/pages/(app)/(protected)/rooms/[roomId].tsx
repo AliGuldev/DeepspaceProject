@@ -326,6 +326,29 @@ async function callAction<T = unknown>(name: string, params: Record<string, unkn
   return payload.data as T
 }
 
+function getCurrentCoordinates(): Promise<{ latitude: number; longitude: number }> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Location access is unavailable. Use a secure connection and a supported browser.'))
+      return
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => resolve({ latitude: coords.latitude, longitude: coords.longitude }),
+      (error) => {
+        const message =
+          error.code === 1
+            ? 'Allow location access in your browser and try again.'
+            : error.code === 3
+              ? 'Location lookup timed out. Please try again.'
+              : 'Your current location could not be determined.'
+        reject(new Error(message))
+      },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 15_000 },
+    )
+  })
+}
+
 interface RoomDetailPageProps {
   className?: string
 }
@@ -341,6 +364,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const [weatherData, setWeatherData] = useState<RoomWeather | null>(null)
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherError, setWeatherError] = useState<string | null>(null)
+  const [gettingLocation, setGettingLocation] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<CandidateRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
@@ -471,6 +495,24 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     }
   }
 
+  const handleUseMyLocation = async () => {
+    if (gettingLocation) return
+
+    setGettingLocation(true)
+    try {
+      const coordinates = await getCurrentCoordinates()
+      await callAction('addRoomLocation', { roomId, ...coordinates })
+      toast.success('Location added', 'Your current location is ready for votes.')
+    } catch (error) {
+      toast.error(
+        'Could not use your location',
+        error instanceof Error ? error.message : 'Please try again.',
+      )
+    } finally {
+      setGettingLocation(false)
+    }
+  }
+
   const handleDeleteCandidate = async () => {
     if (!deleteTarget || deleting) return
 
@@ -532,11 +574,12 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                   </Button>
                   <Button
                     variant="outline"
-                    disabled
-                    title="Location detection is not available yet."
+                    onClick={() => void handleUseMyLocation()}
+                    disabled={gettingLocation}
+                    title="Allow your browser to access your location."
                   >
                     <LocateFixed aria-hidden="true" />
-                    Use my location (coming soon)
+                    {gettingLocation ? 'Finding location…' : 'Use my location'}
                   </Button>
                 </div>
               )}
