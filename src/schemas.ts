@@ -15,12 +15,14 @@ import { itemsSchema } from './schemas/items-schema'
 import { roomsSchema } from './schemas/rooms-schema'
 import { optionsSchema } from './schemas/options-schema'
 import { votesSchema } from './schemas/votes-schema'
+import { eventSearchesSchema } from './schemas/event-searches-schema'
 
 export const schemas: CollectionSchema[] = [
   itemsSchema,
   roomsSchema,
   optionsSchema,
   votesSchema,
+  eventSearchesSchema,
   usersSchema,
   settingsSchema,
 ]

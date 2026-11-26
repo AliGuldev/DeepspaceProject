@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { getAuthToken, useQuery, useUser, useUsers, type RoomUser } from 'deepspace'
 import {
   ArrowLeft,
+  ChevronDown,
   LocateFixed,
   MapPin,
   ThumbsDown,
@@ -16,9 +17,15 @@ import {
   Input,
   Label,
   Modal,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   useToast,
   ConfirmModal,
 } from '@/components/ui'
+import { PLACE_TYPES, type PlaceType } from '@/schemas/options-schema'
 
 interface Room {
   title: string
@@ -31,6 +38,7 @@ interface Candidate {
   roomId: string
   kind: 'option' | 'date' | 'location'
   title: string
+  placeType?: PlaceType
   addedBy: string
 }
 
@@ -54,10 +62,54 @@ interface LocationWeather {
   error?: string
 }
 
+interface RoomEvent {
+  title: string
+  url: string | null
+  eventDate: string
+  summary: string | null
+}
+
+interface LocationEventResult {
+  locationId: string
+  events: RoomEvent[]
+  error?: string
+  warning?: string
+  skipped?: boolean
+}
+
 interface RoomWeather {
   selectedDateId: string
   selectedDate: string
   locations: LocationWeather[]
+  events: LocationEventResult[]
+}
+
+function EventCards({ events }: { events: RoomEvent[] }) {
+  return (
+    <ul className="mt-3 space-y-3">
+      {events.map((event, index) => {
+        const summary = event.summary
+          ?.replace(/\s*\bDATE\W{0,4}\s*unknown\b[.,;:]?/gi, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+
+        return (
+          <li key={`${event.title}-${index}`} className="text-sm">
+            {event.url ? (
+              <a href={event.url} target="_blank" rel="noreferrer" className="font-medium underline">
+                {event.title}
+              </a>
+            ) : (
+              <p className="font-medium">{event.title}</p>
+            )}
+            {summary && (
+              <p className="mt-1 text-muted-foreground">{summary}</p>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
 }
 
 type CandidateRecord = {
@@ -73,7 +125,8 @@ type RoomRecord = {
 interface LocationModalProps {
   isOpen: boolean
   onClose: () => void
-  onAdd: (location: string) => Promise<boolean>
+  onAdd: (location: string, placeType: PlaceType) => Promise<boolean>
+  onUseCurrentLocation: (placeType: PlaceType) => Promise<boolean>
 }
 
 interface DateModalProps {
@@ -132,49 +185,106 @@ function DateModal({ isOpen, initialDate, onClose, onAdd }: DateModalProps) {
   )
 }
 
-function LocationModal({ isOpen, onClose, onAdd }: LocationModalProps) {
+function LocationModal({ isOpen, onClose, onAdd, onUseCurrentLocation }: LocationModalProps) {
   const [location, setLocation] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [placeType, setPlaceType] = useState<PlaceType | ''>('')
+  const [savingMode, setSavingMode] = useState<'manual' | 'current' | null>(null)
+  const saving = savingMode !== null
 
   useEffect(() => {
-    if (isOpen) setLocation('')
+    if (isOpen) {
+      setLocation('')
+      setPlaceType('')
+    }
   }, [isOpen])
 
   const handleSubmit = async () => {
     const nextLocation = location.trim()
-    if (!nextLocation || saving) return
+    if (!nextLocation || !placeType || saving) return
 
-    setSaving(true)
+    setSavingMode('manual')
     try {
-      if (await onAdd(nextLocation)) onClose()
+      if (await onAdd(nextLocation, placeType)) onClose()
     } finally {
-      setSaving(false)
+      setSavingMode(null)
+    }
+  }
+
+  const handleUseCurrentLocation = async () => {
+    if (!placeType || saving) return
+
+    setSavingMode('current')
+    try {
+      if (await onUseCurrentLocation(placeType)) onClose()
+    } finally {
+      setSavingMode(null)
     }
   }
 
   return (
     <Modal open={isOpen} onClose={saving ? () => undefined : onClose} size="sm">
       <Modal.Header>
-        <Modal.Title>Add your location</Modal.Title>
-        <Modal.Description>Enter a place name or address for members to vote on.</Modal.Description>
+        <Modal.Title>Add a place</Modal.Title>
+        <Modal.Description>Choose a place type, then enter a location or use your current location.</Modal.Description>
       </Modal.Header>
       <Modal.Body>
-        <Label htmlFor="room-location" className="mb-2 block">
-          Location
-        </Label>
-        <Input
-          id="room-location"
-          value={location}
-          onChange={(event) => setLocation(event.target.value)}
-          placeholder="City, address, or place name"
-          autoFocus
-        />
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="place-type" className="mb-2 block">
+              Type of place
+            </Label>
+            <Select
+              value={placeType}
+              onValueChange={(value) =>
+                setPlaceType(PLACE_TYPES.find((placeTypeOption) => placeTypeOption === value) ?? '')
+              }
+              disabled={saving}
+            >
+              <SelectTrigger id="place-type">
+                <SelectValue placeholder="Choose a type" />
+              </SelectTrigger>
+              <SelectContent>
+                {PLACE_TYPES.map((type) => (
+                  <SelectItem key={type} value={type}>
+                    {type}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="room-location" className="mb-2 block">
+              Location
+            </Label>
+            <Input
+              id="room-location"
+              value={location}
+              onChange={(event) => setLocation(event.target.value)}
+              placeholder="City, address, or place name"
+              autoFocus
+              disabled={saving}
+            />
+          </div>
+        </div>
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
-        <Button onClick={() => void handleSubmit()} disabled={!location.trim()} loading={saving}>
+        <Button
+          variant="outline"
+          onClick={() => void handleUseCurrentLocation()}
+          disabled={!placeType || saving}
+          loading={savingMode === 'current'}
+        >
+          <LocateFixed aria-hidden="true" />
+          Use my location
+        </Button>
+        <Button
+          onClick={() => void handleSubmit()}
+          disabled={!location.trim() || !placeType || saving}
+          loading={savingMode === 'manual'}
+        >
           Add location
         </Button>
       </Modal.Footer>
@@ -193,9 +303,12 @@ interface CandidateCardProps {
   isSelected?: boolean
   weather?: LocationWeather
   weatherLoading?: boolean
+  events?: LocationEventResult
+  eventsLoading?: boolean
   votingValue?: 1 | -1
   onVote: (value: 1 | -1) => void
   onDelete?: () => void
+  onRetryEvents?: () => void
 }
 
 function CandidateCard({
@@ -209,24 +322,61 @@ function CandidateCard({
   isSelected = false,
   weather,
   weatherLoading,
+  events,
+  eventsLoading,
   votingValue,
   onVote,
   onDelete,
+  onRetryEvents,
 }: CandidateCardProps) {
+  const placeType = PLACE_TYPES.find((type) => type === candidate.data.placeType)
+  const isLocation = candidate.data.kind === 'location'
+  const [isExpanded, setIsExpanded] = useState(false)
+  const detailsId = `location-details-${candidate.recordId}`
+  const title =
+    candidate.data.kind === 'date'
+      ? new Date(`${candidate.data.title}T00:00:00`).toLocaleDateString()
+      : candidate.data.title
+
   return (
     <article className="rounded-xl border border-border bg-card/60 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium text-foreground">
-              {candidate.data.kind === 'date'
-                ? new Date(`${candidate.data.title}T00:00:00`).toLocaleDateString()
-                : candidate.data.title}
-            </h3>
-            {isSelected && <Badge variant="default" size="sm">Selected date</Badge>}
-            {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
-            {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
-          </div>
+          {isLocation ? (
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-start justify-between gap-3 text-left"
+              aria-expanded={isExpanded}
+              aria-controls={detailsId}
+              onClick={() => setIsExpanded((expanded) => !expanded)}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-medium text-foreground">{title}</h3>
+                  {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
+                  {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
+                  {placeType && (
+                    <Badge variant="secondary" size="sm">
+                      {placeType}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+              <ChevronDown
+                className={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform ${
+                  isExpanded ? 'rotate-180' : ''
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-medium text-foreground">{title}</h3>
+              {isSelected && <Badge variant="default" size="sm">Selected date</Badge>}
+              {myVote === 1 && <Badge variant="success" size="sm">Your approve</Badge>}
+              {myVote === -1 && <Badge variant="warning" size="sm">Your veto</Badge>}
+            </div>
+          )}
         </div>
         {canDelete && (
           <Button
@@ -241,61 +391,101 @@ function CandidateCard({
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        {allowVoting ? (
-          <>
-            <Button
-              variant={myVote === 1 ? 'default' : 'secondary'}
-              size="sm"
-              onClick={() => onVote(1)}
-              loading={isVoting && votingValue === 1}
-              disabled={isVoting}
-            >
-              {!isVoting && <ThumbsUp aria-hidden="true" />}
-              Approve ({approvals})
-            </Button>
-            <Button
-              variant={myVote === -1 ? 'default' : 'secondary'}
-              size="sm"
-              onClick={() => onVote(-1)}
-              loading={isVoting && votingValue === -1}
-              disabled={isVoting}
-            >
-              {!isVoting && <ThumbsDown aria-hidden="true" />}
-              Veto ({vetoes})
-            </Button>
-          </>
-        ) : (
-          <span className="text-sm text-muted-foreground">
-            {approvals} approvals | {vetoes} vetoes
-          </span>
-        )}
-      </div>
-      {candidate.data.kind === 'location' && (
-        <div className="mt-4 border-t border-border pt-3">
-          <h4 className="text-sm font-medium text-foreground">Weather</h4>
-          {weatherLoading ? (
-            <p className="mt-1 text-sm text-muted-foreground">Loading Open-Meteo weather…</p>
-          ) : weather?.error ? (
-            <p className="mt-1 text-sm text-muted-foreground">{weather.error}</p>
-          ) : weather ? (
+      <div id={isLocation ? detailsId : undefined} hidden={isLocation && !isExpanded}>
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          {allowVoting ? (
             <>
-              {weather.resolvedPlace && (
-                <p className="mt-1 text-sm text-muted-foreground">{weather.resolvedPlace}</p>
-              )}
-              <p className="mt-1 text-sm text-muted-foreground">
-                {weather.condition ?? 'Conditions unavailable'}
-                {weather.temperatureMin !== null && ` · Low ${weather.temperatureMin}°C`}
-                {weather.temperatureMax !== null && ` · High ${weather.temperatureMax}°C`}
-                {weather.precipitation !== null &&
-                  ` · ${weather.precipitationKind === 'probability' ? 'Chance of precipitation' : 'Precipitation total'} ${weather.precipitation}${weather.precipitationUnit ?? ''}`}
-              </p>
+              <Button
+                variant={myVote === 1 ? 'default' : 'secondary'}
+                size="sm"
+                onClick={() => onVote(1)}
+                loading={isVoting && votingValue === 1}
+                disabled={isVoting}
+              >
+                {!isVoting && <ThumbsUp aria-hidden="true" />}
+                Approve ({approvals})
+              </Button>
+              <Button
+                variant={myVote === -1 ? 'default' : 'secondary'}
+                size="sm"
+                onClick={() => onVote(-1)}
+                loading={isVoting && votingValue === -1}
+                disabled={isVoting}
+              >
+                {!isVoting && <ThumbsDown aria-hidden="true" />}
+                Veto ({vetoes})
+              </Button>
             </>
           ) : (
-            <p className="mt-1 text-sm text-muted-foreground">Weather is not loaded yet.</p>
+            <span className="text-sm text-muted-foreground">
+              {approvals} approvals | {vetoes} vetoes
+            </span>
           )}
         </div>
-      )}
+        {isLocation && (
+          <>
+            <div className="mt-4 border-t border-border pt-3">
+              <h4 className="text-sm font-medium text-foreground">Weather</h4>
+              {weatherLoading ? (
+                <p className="mt-1 text-sm text-muted-foreground">Loading Open-Meteo weather…</p>
+              ) : weather?.error ? (
+                <p className="mt-1 text-sm text-muted-foreground">{weather.error}</p>
+              ) : weather ? (
+                <>
+                  {weather.resolvedPlace && (
+                    <p className="mt-1 text-sm text-muted-foreground">{weather.resolvedPlace}</p>
+                  )}
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {weather.condition ?? 'Conditions unavailable'}
+                    {weather.temperatureMin !== null && ` · Low ${weather.temperatureMin}°C`}
+                    {weather.temperatureMax !== null && ` · High ${weather.temperatureMax}°C`}
+                    {weather.precipitation !== null &&
+                      ` · ${weather.precipitationKind === 'probability' ? 'Chance of precipitation' : 'Precipitation total'} ${weather.precipitation}${weather.precipitationUnit ?? ''}`}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-muted-foreground">Weather is not loaded yet.</p>
+              )}
+            </div>
+            <div className="mt-4 border-t border-border pt-3">
+              <h4 className="text-sm font-medium text-foreground">Events</h4>
+              {eventsLoading ? (
+                <p className="mt-1 text-sm text-muted-foreground">Searching events…</p>
+              ) : events?.skipped ? (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Event searches are limited to the first 10 locations.
+                </p>
+              ) : events?.error ? (
+                <>
+                  <p role="alert" className="mt-1 text-sm text-destructive">{events.error}</p>
+                  <button
+                    type="button"
+                    className="mt-2 text-sm underline disabled:opacity-50"
+                    onClick={onRetryEvents}
+                  >
+                    Retry event search
+                  </button>
+                </>
+              ) : events ? (
+                <>
+                  {events.events.length > 0 ? (
+                    <EventCards events={events.events} />
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">No events matched this location.</p>
+                  )}
+                  {events.warning && (
+                    <p role="alert" className="mt-2 text-sm text-destructive">{events.warning}</p>
+                  )}
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Event searches start when at least two locations are available.
+                </p>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </article>
   )
 }
@@ -361,10 +551,12 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const toast = useToast()
   const [showDateModal, setShowDateModal] = useState(false)
   const [showLocationModal, setShowLocationModal] = useState(false)
+  const [showCloseRoomConfirmation, setShowCloseRoomConfirmation] = useState(false)
   const [weatherData, setWeatherData] = useState<RoomWeather | null>(null)
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherError, setWeatherError] = useState<string | null>(null)
-  const [gettingLocation, setGettingLocation] = useState(false)
+  const [weatherRetry, setWeatherRetry] = useState(0)
+  const [closingRoom, setClosingRoom] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<CandidateRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingVote, setPendingVote] = useState<{ optionId: string; value: 1 | -1 } | null>(null)
@@ -380,6 +572,8 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
   const { records: votes, status: votesStatus } = useQuery<Vote>('votes', {
     where: { roomId },
   })
+  const locationIds = new Set(locations.map((location) => location.recordId))
+  const hasLocationVote = votes.some((vote) => locationIds.has(vote.data.optionId))
 
   const room = rooms.find((candidate) => candidate.recordId === roomId)
   const isOpen = room?.data.status === 'open'
@@ -457,10 +651,14 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     return () => {
       active = false
     }
-  }, [dateStageComplete, dateVoteSignature, locationSignature, roomId])
+  }, [dateStageComplete, dateVoteSignature, locationSignature, roomId, weatherRetry])
 
   const weatherByLocationId = useMemo(
-    () => new Map(weatherData?.locations.map((item) => [item.locationId, item]) ?? []),
+    () => new Map(weatherData?.locations?.map((item) => [item.locationId, item]) ?? []),
+    [weatherData],
+  )
+  const eventsByLocationId = useMemo(
+    () => new Map(weatherData?.events?.map((result) => [result.locationId, result]) ?? []),
     [weatherData],
   )
 
@@ -478,11 +676,12 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     }
   }
 
-  const handleAddLocation = async (location: string): Promise<boolean> => {
+  const handleAddLocation = async (location: string, placeType: PlaceType): Promise<boolean> => {
     try {
       await callAction('addRoomLocation', {
         roomId,
         title: location,
+        placeType,
       })
       toast.success('Location added', `"${location}" is ready for votes.`)
       return true
@@ -495,21 +694,36 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
     }
   }
 
-  const handleUseMyLocation = async () => {
-    if (gettingLocation) return
-
-    setGettingLocation(true)
+  const handleUseMyLocation = async (placeType: PlaceType): Promise<boolean> => {
     try {
       const coordinates = await getCurrentCoordinates()
-      await callAction('addRoomLocation', { roomId, ...coordinates })
+      await callAction('addRoomLocation', { roomId, ...coordinates, placeType })
       toast.success('Location added', 'Your current location is ready for votes.')
+      return true
     } catch (error) {
       toast.error(
         'Could not use your location',
         error instanceof Error ? error.message : 'Please try again.',
       )
+      return false
+    }
+  }
+
+  const handleCloseRoom = async () => {
+    if (closingRoom) return
+
+    setClosingRoom(true)
+    try {
+      await callAction('closeRoom', { roomId })
+      setShowCloseRoomConfirmation(false)
+      toast.success('Room closed', 'Voting is now complete.')
+    } catch (error) {
+      toast.error(
+        'Could not close room',
+        error instanceof Error ? error.message : 'Please try again.',
+      )
     } finally {
-      setGettingLocation(false)
+      setClosingRoom(false)
     }
   }
 
@@ -572,15 +786,14 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                     <MapPin aria-hidden="true" />
                     Add location
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => void handleUseMyLocation()}
-                    disabled={gettingLocation}
-                    title="Allow your browser to access your location."
-                  >
-                    <LocateFixed aria-hidden="true" />
-                    {gettingLocation ? 'Finding location…' : 'Use my location'}
-                  </Button>
+                  {room.data.ownerId === user?.id && hasLocationVote && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => setShowCloseRoomConfirmation(true)}
+                    >
+                      Close room
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -717,7 +930,8 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                       {locations.map((location) => {
                         const totals = voteTotals.get(location.recordId)
                         const canDelete =
-                          location.data.addedBy === user?.id || room.data.ownerId === user?.id
+                          isOpen &&
+                          (location.data.addedBy === user?.id || room.data.ownerId === user?.id)
                         return (
                           <CandidateCard
                             key={location.recordId}
@@ -730,6 +944,8 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                             isVoting={pendingVote?.optionId === location.recordId}
                             weather={weatherByLocationId.get(location.recordId)}
                             weatherLoading={weatherLoading}
+                            events={eventsByLocationId.get(location.recordId)}
+                            eventsLoading={weatherLoading && locations.length >= 2}
                             votingValue={
                               pendingVote?.optionId === location.recordId
                                 ? pendingVote.value
@@ -737,6 +953,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                             }
                             onVote={(value) => void handleVote(location.recordId, value)}
                             onDelete={() => setDeleteTarget(location)}
+                            onRetryEvents={() => setWeatherRetry((retry) => retry + 1)}
                           />
                         )
                       })}
@@ -750,6 +967,10 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
                     {' · '}Geocoding by{' '}
                     <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer" className="underline">
                       Geoapify
+                    </a>
+                    {' · '}Events by{' '}
+                    <a href="https://exa.ai/" target="_blank" rel="noreferrer" className="underline">
+                      Exa
                     </a>
                   </p>
                 </>
@@ -770,6 +991,7 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
         isOpen={showLocationModal}
         onClose={() => setShowLocationModal(false)}
         onAdd={handleAddLocation}
+        onUseCurrentLocation={handleUseMyLocation}
       />
 
       <ConfirmModal
@@ -782,6 +1004,18 @@ export default function RoomDetailPage({ className }: RoomDetailPageProps) {
         description="This location will be removed. This cannot be undone."
         confirmText="Delete"
         loading={deleting}
+      />
+
+      <ConfirmModal
+        open={showCloseRoomConfirmation}
+        onClose={() => {
+          if (!closingRoom) setShowCloseRoomConfirmation(false)
+        }}
+        onConfirm={() => void handleCloseRoom()}
+        title="Close this room?"
+        description="Voting will stop and locations can no longer be changed. This cannot be undone."
+        confirmText="Close room"
+        loading={closingRoom}
       />
     </div>
   )
